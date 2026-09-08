@@ -1,0 +1,34 @@
+# --- data (never commit anyone's flight recordings or derived datasets) ---
+CSVFiles/
+*.csv
+dashboard/data/
+*.parquet
+
+# --- HYSPLIT run outputs / caches (generated locally, machine-specific) ---
+hysplit_results/
+*.tif
+
+# --- credentials / local config ---
+.env
+.env.*
+
+# --- logs ---
+*.log
+
+# --- python ---
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- stale OneDrive sync-conflict duplicates ---
+*-HelinsPC.*

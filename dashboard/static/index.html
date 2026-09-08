@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dust Impact Dashboard</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+<header class="app-header">
+  <div>
+    <h1>Dust Impact Dashboard</h1>
+    <p class="subtitle">Core dust ingestion by flight phase, altitude and time</p>
+  </div>
+  <div class="header-actions">
+    <div id="loading-indicator" class="spinner" hidden aria-label="Loading" title="Loading…"></div>
+    <button id="settings-btn" class="icon-btn" type="button" title="Settings" aria-label="Settings">⚙</button>
+  </div>
+</header>
+
+<div id="settings-overlay" class="modal-overlay" hidden>
+  <div class="modal" role="dialog" aria-label="Settings">
+    <div class="modal-header">
+      <h2>Settings</h2>
+      <button id="settings-close" class="icon-btn" type="button" aria-label="Close">✕</button>
+    </div>
+    <section class="settings-group">
+      <h3>Theme</h3>
+      <div class="radio-row">
+        <label><input type="radio" name="theme" value="system"> System</label>
+        <label><input type="radio" name="theme" value="light"> Light</label>
+        <label><input type="radio" name="theme" value="dark"> Dark</label>
+      </div>
+    </section>
+    <section class="settings-group">
+      <h3>Chart size</h3>
+      <div class="radio-row">
+        <label><input type="radio" name="density" value="compact"> Compact</label>
+        <label><input type="radio" name="density" value="comfortable"> Comfortable</label>
+        <label><input type="radio" name="density" value="tall"> Tall</label>
+      </div>
+    </section>
+    <section class="settings-group">
+      <h3>Route chart size</h3>
+      <p class="hint">How many routes to show in the "Total dust ingested by route" chart. (The flight ranking table has its own count control above it.)</p>
+      <select id="settings-top-n" class="select-input">
+        <option value="10">Top 10</option>
+        <option value="15">Top 15</option>
+        <option value="25">Top 25</option>
+        <option value="50">Top 50</option>
+      </select>
+    </section>
+  </div>
+</div>
+
+<nav class="view-tabs">
+  <button class="tab-btn active" data-view="about">About</button>
+  <button class="tab-btn" data-view="aggregate">Aggregate view</button>
+  <button class="tab-btn" data-view="single">Single flight view</button>
+  <button class="tab-btn" data-view="dustsource">Dust source attribution</button>
+  <button class="tab-btn" data-view="compare">Compare flights</button>
+  <button class="tab-btn" data-view="filtercompare">Compare filters</button>
+  <button class="tab-btn" data-view="routes">Routes</button>
+  <button class="tab-btn" data-view="modelperf">Model performance</button>
+</nav>
+
+<div class="about-page" id="view-about">
+  <div class="about-content">
+    <section class="about-section">
+      <h2>What this is</h2>
+      <p>A local dashboard for exploring core dust ingestion across flight phases,
+      built from per-flight recordings of aircraft engine and flight data. It is
+      built to help identify and characterize the impact of airborne dust
+      (including dust storms) on aircraft engines.</p>
+    </section>
+
+    <section class="about-section">
+      <h2>The data</h2>
+      <p>Each row is one timestep from one flight, recorded roughly every 4 to
+      10 seconds. The key column throughout this dashboard is
+      <code>CoreDustIngested_g</code>: the mass of dust ingested by the engine
+      core <em>during that single timestep</em> (not a running total). Flight
+      phase (<code>CLIMB</code> / <code>CRUISE</code> / <code>DESCENT</code> /
+      <code>LEVEL DESCENT</code>) and altitude (<code>Alt_ft</code>) are the two
+      other columns used everywhere. Rows recorded as <code>UNKNOWN</code> phase,
+      and any flight whose recording doesn't reliably start in climb, are
+      excluded automatically before they reach any chart.</p>
+      <p>"Elapsed time" on any chart is re-zeroed at each flight's first usable
+      row, not the raw recording start, so flights are comparable regardless of
+      how much ground/taxi time was captured before they got airborne.</p>
+    </section>
+
+    <section class="about-section">
+      <h2>The tabs</h2>
+      <ul class="about-list">
+        <li><strong>Aggregate view</strong>: filter across the whole dataset
+        (aircraft type, date, takeoff time, phase, altitude, location,
+        registration) and see distributions, trends and rankings.</li>
+        <li><strong>Single flight view</strong>: inspect one flight in full
+        detail: flight path, phase timeline, altitude, speed, dust profile.</li>
+        <li><strong>Dust source attribution</strong>: a HYSPLIT backward-
+        dispersion map of where a selected flight's dust likely originated. Can
+        compute it on demand for a flight that doesn't have it yet.</li>
+        <li><strong>Compare flights</strong>: overlay 2 to 8 individual flights
+        on the same charts, each in its own color.</li>
+        <li><strong>Compare filters</strong>: hold a snapshot of the current
+        aggregate view (its filters and results), change the filters and hold
+        another, then see them overlaid.</li>
+        <li><strong>Routes</strong>: a geographic view of every route flown,
+        colored by total dust ingested.</li>
+      </ul>
+      <p>Every chart has its own <strong>ⓘ Info</strong> button explaining
+      exactly what is plotted and how it is calculated.</p>
+    </section>
+  </div>
+</div>
+
+<div class="layout" id="view-aggregate" hidden>
+  <aside class="filters" id="filters">
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Aircraft type</summary>
+      <div id="aircraft-checkboxes" class="checkbox-list"></div>
+    </details>
+
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Date range</summary>
+      <div class="field-row">
+        <label>From <input type="date" id="date-from"></label>
+        <label>To <input type="date" id="date-to"></label>
+      </div>
+      <button id="all-dates-btn" class="link-btn">All available dates</button>
+    </details>
+
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Takeoff time of day</summary>
+      <div class="field-row">
+        <label>From <input type="time" id="takeoff-from" step="1800" value="00:00"></label>
+        <label>To <input type="time" id="takeoff-to" step="1800" value="23:30"></label>
+      </div>
+      <button id="all-day-btn" class="link-btn">All times of day</button>
+      <p class="hint">30-minute increments, applied across all dates</p>
+    </details>
+
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Flight phase</summary>
+      <div id="phase-checkboxes" class="checkbox-list"></div>
+      <p class="hint">UNKNOWN phase rows are always excluded</p>
+    </details>
+
+    <details class="filter-group filter-group-collapsible">
+      <summary>Altitude filter</summary>
+      <label class="checkbox-list-item">
+        <input type="checkbox" id="altitude-enable">
+        Filter by altitude
+      </label>
+      <div class="field-row" id="altitude-range-row">
+        <label>Min (ft) <input type="number" id="altitude-min" step="500" value="0" disabled></label>
+        <label>Max (ft) <input type="number" id="altitude-max" step="500" value="45000" disabled></label>
+      </div>
+      <p class="hint">Combines with the phase filter above (both apply together)</p>
+    </details>
+
+    <details class="filter-group filter-group-collapsible">
+      <summary>Location filter</summary>
+      <label class="checkbox-list-item">
+        <input type="checkbox" id="location-enable">
+        Filter by departure / arrival airport
+      </label>
+      <div id="location-fields">
+        <div class="location-block">
+          <p class="hint">Departure country</p>
+          <div id="dep-country-checkboxes" class="checkbox-list scrollable-list"></div>
+          <p class="hint">Departure city</p>
+          <div id="dep-city-checkboxes" class="checkbox-list scrollable-list"></div>
+          <label class="field-row-inline">or ICAO <input type="text" id="dep-icao" placeholder="e.g. OEJN, OERK" disabled></label>
+        </div>
+        <div class="location-block">
+          <p class="hint">Arrival country</p>
+          <div id="arr-country-checkboxes" class="checkbox-list scrollable-list"></div>
+          <p class="hint">Arrival city</p>
+          <div id="arr-city-checkboxes" class="checkbox-list scrollable-list"></div>
+          <label class="field-row-inline">or ICAO <input type="text" id="arr-icao" placeholder="e.g. OTHH" disabled></label>
+        </div>
+      </div>
+      <p class="hint">Country alone matches any airport in it; checking a city narrows further. Typing ICAO codes (comma-separated) overrides both.</p>
+    </details>
+
+    <details class="filter-group filter-group-collapsible">
+      <summary>Registration filter</summary>
+      <label class="checkbox-list-item">
+        <input type="checkbox" id="registration-enable">
+        Filter by aircraft registration
+      </label>
+      <input type="text" id="registration-search" class="select-input" placeholder="Search registrations…" disabled>
+      <div class="link-btn-row">
+        <button type="button" id="registration-select-all" class="link-btn" disabled>Select all</button>
+        <button type="button" id="registration-deselect-all" class="link-btn" disabled>Deselect all</button>
+      </div>
+      <div id="registration-checkboxes" class="checkbox-list scrollable-list"></div>
+    </details>
+
+    <button id="reset-btn" class="reset-btn">Reset filters</button>
+  </aside>
+
+  <main class="content">
+    <div class="hold-snapshot-row">
+      <button id="hold-snapshot-btn" type="button" class="action-btn">📌 Hold for comparison</button>
+      <span id="hold-snapshot-hint" class="hint">Snapshots this view (current filters + results) so you can overlay it against another on the Compare filters tab.</span>
+    </div>
+    <div id="stat-cards" class="stat-cards"></div>
+    <div id="empty-state" class="empty-state" hidden>No flights match the current filters.</div>
+    <div id="chart-grid" class="chart-grid">
+      <div class="chart-card">
+        <div class="chart-card-header"></div>
+        <div id="chart-dust-time" class="chart"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header"></div>
+        <div id="chart-cumulative" class="chart"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header"></div>
+        <div id="chart-pdf" class="chart"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header"></div>
+        <div id="chart-altitude" class="chart"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header"></div>
+        <div id="chart-boxplot" class="chart"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header"></div>
+        <div id="chart-by-hour" class="chart"></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-header"></div>
+        <div id="chart-by-route" class="chart"></div>
+      </div>
+      <div class="chart-card chart-card-wide">
+        <div class="chart-card-header"></div>
+        <div id="chart-by-date" class="chart chart-tall"></div>
+      </div>
+      <div class="chart-card chart-card-wide">
+        <div class="chart-card-header"></div>
+        <div id="flights-ranking-controls" class="ranking-controls">
+          <div class="radio-row">
+            <label><input type="radio" name="flights-order" value="desc" checked> Dustiest first</label>
+            <label><input type="radio" name="flights-order" value="asc"> Cleanest first</label>
+          </div>
+          <label class="ranking-count-label">Show
+            <select id="flights-limit-select" class="select-input">
+              <option value="10">10</option>
+              <option value="15" selected>15</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+            flights
+          </label>
+        </div>
+        <div id="top-flights-table" class="table-wrap"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="layout" id="view-single" hidden>
+  <aside class="filters">
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Aircraft type</summary>
+      <div id="single-aircraft-checkboxes" class="checkbox-list"></div>
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Date</summary>
+      <input type="date" id="single-date">
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Flight</summary>
+      <select id="single-flight-select"><option value="">Choose a date first…</option></select>
+    </details>
+  </aside>
+
+  <main class="content">
+    <div id="single-empty-state" class="empty-state">Choose a date and a flight to inspect.</div>
+    <div id="single-flight-panel" hidden>
+      <div id="single-flight-info" class="stat-cards"></div>
+      <div class="chart-grid">
+        <div class="chart-card chart-card-wide">
+          <div class="chart-card-header"></div>
+          <div id="chart-flight-map" class="chart chart-tall"></div>
+        </div>
+        <div class="chart-card chart-card-wide">
+          <div class="chart-card-header"></div>
+          <div id="chart-flight-phases" class="chart chart-short"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-flight-altitude" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-flight-dust" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-flight-speed" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-flight-vspeed" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-flight-dust-by-phase" class="chart"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="layout" id="view-dustsource" hidden>
+  <aside class="filters">
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Aircraft type</summary>
+      <div id="ds-aircraft-checkboxes" class="checkbox-list"></div>
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Date</summary>
+      <input type="date" id="ds-date">
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Flight</summary>
+      <select id="ds-flight-select"><option value="">Choose a date first…</option></select>
+    </details>
+  </aside>
+
+  <main class="content">
+    <div id="ds-empty-state" class="empty-state">Choose a date and a flight to inspect.</div>
+    <div id="ds-flight-panel" hidden>
+      <div class="chart-grid">
+        <div class="chart-card chart-card-wide">
+          <div class="chart-card-header"></div>
+          <div class="radio-row" id="ds-strategy-controls">
+            <label><input type="radio" name="ds-strategy" value="topn" checked> Top N peak points</label>
+            <label><input type="radio" name="ds-strategy" value="trigger"> Trigger-based (real high-concentration events)</label>
+            <label><input type="radio" name="ds-strategy" value="dense"> Dense (~1 point/min along route)</label>
+          </div>
+          <p id="ds-strategy-hint" class="hint"></p>
+          <div class="radio-row" id="ds-method-controls">
+            <label><input type="radio" name="ds-method" value="hysplit" checked> HYSPLIT</label>
+            <label><input type="radio" name="ds-method" value="surrogate" id="ds-method-surrogate-input" disabled> ⚡ Surrogate model (instant estimate)</label>
+          </div>
+          <div class="runtime-select-row">
+            <label class="runtime-select-label" id="ds-points-label">Number of points (N)
+              <input type="number" id="ds-points-input" min="1" max="60" value="10">
+            </label>
+            <label class="runtime-select-label">Backward hours
+              <input type="number" id="ds-hours-input" min="1" max="120" value="48">
+            </label>
+          </div>
+          <div class="runtime-select-row">
+            <label class="runtime-select-label">Altitude min (ft)
+              <input type="number" id="ds-alt-min-input" step="500" placeholder="no min">
+            </label>
+            <label class="runtime-select-label">Altitude max (ft)
+              <input type="number" id="ds-alt-max-input" step="500" placeholder="no max">
+            </label>
+          </div>
+          <p class="hint">Optional -- limits the source map to release points within this altitude band. Reuses the already-computed HYSPLIT/surrogate result, no new compute needed. Leave blank for no limit.</p>
+          <div id="ds-compute-panel" class="compute-panel" hidden>
+            <p id="ds-compute-message">Not yet computed for this flight.</p>
+            <button type="button" id="ds-compute-btn" class="link-btn">Compute dust source</button>
+            <p id="ds-compute-status" class="hint"></p>
+          </div>
+          <h4>Map display</h4>
+          <div class="radio-row">
+            <label><input type="checkbox" id="ds-gate-toggle"> Only show confirmed sources (susceptibility-gated)</label>
+            <label><input type="checkbox" id="ds-landimg-toggle"> Show true-color land imagery</label>
+            <label><input type="checkbox" id="ds-terrain-toggle"> Show terrain relief</label>
+            <label><input type="checkbox" id="ds-lst-toggle"> Show land surface temperature</label>
+            <label><input type="checkbox" id="ds-wind-overlay-toggle" checked> Show MERRA-2 wind vectors</label>
+            <label><input type="checkbox" id="ds-backtraj-toggle"> Show wind-only back-trajectory</label>
+            <label><input type="checkbox" id="ds-overlay-toggle"> Overlay <span id="ds-overlay-label">other method</span></label>
+          </div>
+          <div id="ds-gate-settings" class="compute-panel" hidden>
+            <div class="checkbox-list" id="ds-gate-layer-checkboxes">
+              <label><input type="checkbox" class="ds-gate-layer" value="sand_gt_50pct" checked> Sand content &gt;50% (SoilGrids)</label>
+              <label><input type="checkbox" class="ds-gate-layer" value="worldcover_bare_sparse" checked> Bare/sparse vegetation (WorldCover)</label>
+              <label><input type="checkbox" class="ds-gate-layer" value="arenosols" checked> Arenosols probability (WRB)</label>
+              <label><input type="checkbox" class="ds-gate-layer" value="fluvisols" checked> Fluvisols probability (WRB)</label>
+              <label><input type="checkbox" class="ds-gate-layer" value="solonchaks" checked> Solonchaks probability (WRB)</label>
+            </div>
+            <label class="runtime-select-label">Require
+              <select id="ds-gate-mode">
+                <option value="any">Any checked layer</option>
+                <option value="majority" selected>Majority of checked layers</option>
+                <option value="all">All checked layers</option>
+              </select>
+            </label>
+            <p class="hint">Pick which soil/land-cover layers count toward "confirmed sources" and how many of them need to agree. Defaults to all 5 layers, majority agreement (the original fixed behavior).</p>
+          </div>
+          <details class="toggle-help">
+            <summary>What do these toggles do?</summary>
+            <ul>
+              <li><strong>Only show confirmed sources (susceptibility gated).</strong> Hides any part of the HYSPLIT result that falls outside an independent soil and land cover model's plausible-source area, leaving only the overlap between the two independent methods. Which layers count and how many need to agree is configurable below this toggle once checked.</li>
+              <li><strong>Show true-color land imagery.</strong> Adds a real satellite photo of the ground (NASA VIIRS true-color, same day as the flight) as a background layer, so you can see actual terrain -- desert, vegetation, water, urban areas -- under the modeled source region instead of just blank map axes.</li>
+              <li><strong>Show terrain relief.</strong> Adds a greyscale hillshade (NASA ASTER GDEM elevation model) as a background layer instead of a photo, so rugged/rocky terrain -- mountain ranges, escarpments, wadis -- is visible directly, unobscured by cloud cover or vegetation. Independent of the true-color imagery toggle above; both can be on at once (terrain draws on top).</li>
+              <li><strong>Show land surface temperature.</strong> Adds MODIS ground temperature (same day as the flight) as a background layer -- hot bare sand/rock reads yellow/orange, cooler vegetated or wet ground reads green. A rough proxy for exposed dry surface versus vegetation or moisture. Independent of the other background toggles; any combination can be on at once.</li>
+              <li><strong>Show MERRA-2 wind vectors.</strong> Colors each release point by how closely an independent weather reanalysis's wind direction agrees with the direction back to HYSPLIT's own modeled source (see the colorbar), plus an arrow showing which way that wind was actually blowing.</li>
+              <li><strong>Show wind-only back-trajectory.</strong> Draws a straight line from each release point showing where the air would have come from if the wind measured there had stayed constant for a set number of hours. A simplified, independent check, not a full simulation like HYSPLIT.</li>
+              <li><strong>Overlay other method.</strong> Draws the OTHER method's result (surrogate if you're viewing HYSPLIT, or vice versa) as outlines on top of this map, plus how much their high-density regions overlap -- computes it first if it isn't already. Logged to the Model performance tab's comparison table.</li>
+            </ul>
+          </details>
+          <div id="ds-overlay-compute-panel" class="compute-panel" hidden>
+            <p id="ds-overlay-compute-message"></p>
+            <button type="button" id="ds-overlay-compute-btn" class="link-btn">Compute for overlay</button>
+            <p id="ds-overlay-compute-status" class="hint"></p>
+          </div>
+          <div id="chart-ds-source" class="chart chart-tall"></div>
+          <p id="ds-wind-status" class="hint"></p>
+          <p id="ds-aod-agreement" class="hint"></p>
+        </div>
+        <div class="chart-card chart-card-wide">
+          <div class="chart-card-header"></div>
+          <h4>Susceptibility layers</h4>
+          <p class="hint">Region-wide (not tied to the selected flight) -- the 5 independent soil/land-cover inputs behind the susceptibility-gated toggle above. Toggle each on or off to inspect it on its own.</p>
+          <div class="radio-row" id="ds-layer-toggles">
+            <label><input type="checkbox" class="ds-layer-toggle" data-layer="sand_gt_50pct" checked> Sand content &gt;50% (SoilGrids)</label>
+            <label><input type="checkbox" class="ds-layer-toggle" data-layer="worldcover_bare_sparse" checked> Bare/sparse vegetation (WorldCover)</label>
+            <label><input type="checkbox" class="ds-layer-toggle" data-layer="arenosols" checked> Arenosols probability (WRB)</label>
+            <label><input type="checkbox" class="ds-layer-toggle" data-layer="fluvisols" checked> Fluvisols probability (WRB)</label>
+            <label><input type="checkbox" class="ds-layer-toggle" data-layer="solonchaks" checked> Solonchaks probability (WRB)</label>
+          </div>
+          <div class="chart-grid" id="ds-layer-charts">
+            <div class="chart-card" data-layer-card="sand_gt_50pct">
+              <div class="chart-card-header"></div>
+              <div id="chart-layer-sand_gt_50pct" class="chart"></div>
+            </div>
+            <div class="chart-card" data-layer-card="worldcover_bare_sparse">
+              <div class="chart-card-header"></div>
+              <div id="chart-layer-worldcover_bare_sparse" class="chart"></div>
+            </div>
+            <div class="chart-card" data-layer-card="arenosols">
+              <div class="chart-card-header"></div>
+              <div id="chart-layer-arenosols" class="chart"></div>
+            </div>
+            <div class="chart-card" data-layer-card="fluvisols">
+              <div class="chart-card-header"></div>
+              <div id="chart-layer-fluvisols" class="chart"></div>
+            </div>
+            <div class="chart-card" data-layer-card="solonchaks">
+              <div class="chart-card-header"></div>
+              <div id="chart-layer-solonchaks" class="chart"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="layout" id="view-compare" hidden>
+  <aside class="filters">
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Aircraft type</summary>
+      <div id="compare-aircraft-checkboxes" class="checkbox-list"></div>
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Flights to compare</summary>
+      <div id="compare-slots"></div>
+      <button type="button" id="compare-add-slot" class="link-btn">+ Add another flight</button>
+      <p class="hint">Pick 2–8 flights. Each gets its own color across the charts.</p>
+    </details>
+  </aside>
+
+  <main class="content">
+    <div id="compare-empty-state" class="empty-state">Pick at least two flights to compare.</div>
+    <div id="compare-panel" hidden>
+      <div id="compare-legend" class="stat-cards"></div>
+      <div class="chart-grid">
+        <div class="chart-card chart-card-wide">
+          <div class="chart-card-header"></div>
+          <div id="chart-compare-phases" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-compare-altitude" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-compare-dust" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-compare-cumulative" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-compare-speed" class="chart"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="layout" id="view-filtercompare" hidden>
+  <main class="content">
+    <div id="filtercompare-empty-state" class="empty-state">Go to Aggregate view, set filters, and click "Hold for comparison" to add a view here. Hold at least two to compare them.</div>
+    <div id="filtercompare-panel" hidden>
+      <div id="filtercompare-legend" class="snapshot-legend"></div>
+      <div class="chart-grid">
+        <div class="chart-card chart-card-wide">
+          <div class="chart-card-header"></div>
+          <div id="fc-stats-table" class="table-wrap"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-fc-time" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-fc-cumulative" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-fc-pdf" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-fc-altitude" class="chart"></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-card-header"></div>
+          <div id="chart-fc-hour" class="chart"></div>
+        </div>
+        <div class="chart-card chart-card-wide">
+          <div class="chart-card-header"></div>
+          <div id="chart-fc-date" class="chart chart-tall"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="layout" id="view-routes" hidden>
+  <aside class="filters">
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Aircraft type</summary>
+      <div id="routes-aircraft-checkboxes" class="checkbox-list"></div>
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
+      <summary>Date range</summary>
+      <div class="field-row">
+        <label>From <input type="date" id="routes-date-from"></label>
+        <label>To <input type="date" id="routes-date-to"></label>
+      </div>
+      <button id="routes-all-dates-btn" class="link-btn">All available dates</button>
+    </details>
+  </aside>
+
+  <main class="content">
+    <div id="routes-stat-cards" class="stat-cards"></div>
+    <div id="routes-empty-state" class="empty-state" hidden>No routes match the current filters.</div>
+    <div id="routes-panel" class="chart-grid">
+      <div class="chart-card chart-card-wide">
+        <div class="chart-card-header"></div>
+        <div id="chart-routes-map" class="chart chart-tall"></div>
+      </div>
+      <div class="chart-card chart-card-wide">
+        <div class="chart-card-header"></div>
+        <div id="routes-table" class="table-wrap"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="layout" id="view-modelperf" hidden>
+  <main class="content">
+    <p class="tab-intro">
+      Tracks the trained HYSPLIT surrogate model itself: how much data it's trained on, how well it
+      cross-validates against flights it's never seen, and (below) how far its estimates land from real
+      HYSPLIT runs on flights that have both.
+    </p>
+    <div id="mp-stat-cards" class="stat-cards"></div>
+    <div class="chart-grid">
+      <div class="chart-card chart-card-wide">
+        <div class="chart-card-header"></div>
+        <h4>Retrain</h4>
+        <p class="hint">Rebuilds the model from scratch using every combined_raw.csv currently on disk (hysplit_tools/surrogate_model.py). Takes a while once there's a lot of training data -- safe to leave this tab and come back.</p>
+        <div id="mp-retrain-panel" class="compute-panel">
+          <button type="button" id="mp-retrain-btn" class="link-btn">Retrain surrogate model</button>
+          <p id="mp-retrain-status" class="hint"></p>
+        </div>
+      </div>
+      <div class="chart-card chart-card-wide">
+        <div class="chart-card-header"></div>
+        <h4>Surrogate vs. real HYSPLIT</h4>
+        <p class="hint">For every flight with both a real HYSPLIT and a surrogate result computed (same strategy), how much the two methods' high-density source regions overlap (Jaccard, percentile-thresholded -- same method as the AOD agreement stat) -- a spot check of surrogate accuracy against real physics, independent of the training-time CV metrics above.</p>
+        <p id="mp-agreement-summary" class="hint"></p>
+        <div id="chart-mp-agreement" class="chart"></div>
+        <p class="hint"><strong>% of HYSPLIT area in surrogate</strong> -- of HYSPLIT's own high-density cells, how many the surrogate also flagged (a low value means the surrogate is missing real source region, a false negative).</p>
+        <div id="chart-mp-hysplit-in-surrogate" class="chart"></div>
+        <p class="hint"><strong>% of surrogate area in HYSPLIT</strong> -- of the surrogate's own high-density cells, how many HYSPLIT also flagged (a low value means the surrogate is guessing too wide, a false positive).</p>
+        <div id="chart-mp-surrogate-in-hysplit" class="chart"></div>
+        <div id="mp-agreement-table" class="table-wrap"></div>
+      </div>
+      <div class="chart-card chart-card-wide">
+        <div class="chart-card-header"></div>
+        <h4>Susceptibility agreement</h4>
+        <p class="hint">For every flight with a real HYSPLIT result, what percentage of its own high-density source region is independently supported by the susceptibility grid (soil and land-cover data, entirely separate from the transport modeling) -- run offline via hysplit_tools/validate_susceptibility_agreement.py, since it needs every already-computed flight on disk rather than just the current one.</p>
+        <p id="mp-susceptibility-summary" class="hint"></p>
+        <div id="chart-mp-susceptibility" class="chart"></div>
+        <div id="mp-susceptibility-table" class="table-wrap"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

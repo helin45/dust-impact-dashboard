@@ -55,7 +55,7 @@ import density_utils
 import postprocess_results
 
 DUST_FILES_DIR = Path(__file__).resolve().parent
-CSV_DIR = DUST_FILES_DIR.parent / "CSVFiles"  # per-flight CSVs live at the repo root, alongside dashboard/ and hysplit_tools/
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or DUST_FILES_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
 FLIGHTS_DIR = os.path.join(backtrack.RESULTS_DIR, "flights")
 
 PHASES = ["CLIMB", "CRUISE", "DESCENT", "LEVEL DESCENT"]  # matches dashboard/app.py's PHASES

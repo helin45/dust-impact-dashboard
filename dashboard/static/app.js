@@ -1124,6 +1124,36 @@ function gibsSnapshotUrl(layer, dateStr, lonMin, lonMax, latMin, latMax) {
   return `https://wvs.earthdata.nasa.gov/api/v1/snapshot?${params}`;
 }
 
+// ESA WorldCover 2021 (10m) discrete classification legend -- mirrors
+// app.py's WORLDCOVER_LEGEND exactly (the official product legend, not an
+// approximation); update both together if this ever changes. Used both to
+// build the on-page swatch legend below the map and to label the
+// background image -- WorldCover has no public snapshot API like NASA
+// GIBS, so /api/worldcover_overlay renders the image server-side instead
+// of this just being a URL builder like gibsSnapshotUrl above.
+const WORLDCOVER_LEGEND = [
+  [10, "Tree cover", "#006400"], [20, "Shrubland", "#ffbb22"], [30, "Grassland", "#ffff4c"],
+  [40, "Cropland", "#f096ff"], [50, "Built-up", "#fa0000"], [60, "Bare / sparse vegetation", "#b4b4b4"],
+  [70, "Snow and ice", "#f0f0f0"], [80, "Permanent water bodies", "#0064c8"],
+  [90, "Herbaceous wetland", "#0096a0"], [95, "Mangroves", "#00cf75"], [100, "Moss and lichen", "#fae6a0"],
+];
+function worldcoverOverlayUrl(lonMin, lonMax, latMin, latMax) {
+  const params = new URLSearchParams({
+    lon_min: lonMin, lon_max: lonMax, lat_min: latMin, lat_max: latMax,
+  });
+  return `/api/worldcover_overlay?${params}`;
+}
+function renderWorldCoverLegend(show) {
+  const el = document.getElementById("ds-worldcover-legend");
+  el.hidden = !show;
+  if (!show) return;
+  el.innerHTML = WORLDCOVER_LEGEND.map(([, label, color]) => `
+    <span class="worldcover-legend-item">
+      <span class="worldcover-swatch" style="background:${color}"></span>${label}
+    </span>
+  `).join("");
+}
+
 // Prefers whichever source grid(s) are actually computed (they're already
 // padded to cover the full trajectory extent); falls back to the flight's
 // own recorded path so a map still shows before anything's been computed.
@@ -1191,6 +1221,61 @@ function wireFlightPicker(prefix, loadFlight) {
     loadFlight(e.target.value);
   });
   loadFlightsForDate();
+}
+
+// ---- Free-text "jump to flight" search (callsign/registration/route),
+// shared by every tab that has a `${prefix}-search-input` -- bypasses the
+// aircraft-type/date/flight dropdown chain entirely and calls the same
+// per-tab loader those dropdowns eventually call, so selecting a result is
+// exactly equivalent to picking that flight the normal way. Silently does
+// nothing if the tab has no search box (not every picker gets one).
+function wireFlightSearch(prefix, onSelect) {
+  const input = document.getElementById(`${prefix}-search-input`);
+  const results = document.getElementById(`${prefix}-search-results`);
+  if (!input || !results) return;
+
+  function hideResults() {
+    results.hidden = true;
+    results.innerHTML = "";
+  }
+
+  const runSearch = debounce(async () => {
+    const q = input.value.trim();
+    if (q.length < 2) { hideResults(); return; }
+    let matches;
+    try {
+      matches = await fetchJSON(`/api/flight_search?q=${encodeURIComponent(q)}`);
+    } catch (err) {
+      console.error(`${prefix}: flight search failed`, err);
+      results.innerHTML = `<div class="search-result-empty">Search failed, see console.</div>`;
+      results.hidden = false;
+      return;
+    }
+    if (matches.length === 0) {
+      results.innerHTML = `<div class="search-result-empty">No matches.</div>`;
+      results.hidden = false;
+      return;
+    }
+    results.innerHTML = matches.map(m => {
+      const route = (m.origin_icao && m.destination_icao) ? `${m.origin_icao}→${m.destination_icao}` : "route unknown";
+      return `<button type="button" class="search-result-item" data-flight-id="${m.flight_id}">` +
+        `<strong>${m.callsign || "?"}</strong> ${m.registration || ""} — ${m.date} ${m.takeoff_hhmm} (${route})` +
+        `</button>`;
+    }).join("");
+    results.hidden = false;
+  }, 250);
+
+  input.addEventListener("input", runSearch);
+  results.addEventListener("click", (e) => {
+    const btn = e.target.closest(".search-result-item");
+    if (!btn) return;
+    input.value = "";
+    hideResults();
+    onSelect(btn.dataset.flightId);
+  });
+  document.addEventListener("click", (e) => {
+    if (e.target !== input && !results.contains(e.target)) hideResults();
+  });
 }
 
 // ---- "Compute dust source" button: launches flight_backtrack.py for the
@@ -1270,23 +1355,14 @@ const STRATEGY_LABELS = {
   trigger: "trigger-based real high-concentration events",
   dense: "dense, ~1 point/min along the route",
 };
-const SURROGATE_WARNING = "⚠ SURROGATE MODEL ESTIMATE, not a physical simulation: a statistical model trained " +
-  "only on flights that already have a real HYSPLIT result, predicting the climatological/seasonal pattern those " +
-  "imply -- it has not seen this flight's actual meteorology. Treat it as a fast, rough guide for exploration, " +
-  "not as evidence on its own; cross-check against a real HYSPLIT run (or the MERRA-2/AOD corroboration panels) " +
-  "before relying on it.";
-const DENSITY_INFO = (data, isSurrogate) => {
-  const prefix = isSurrogate ? SURROGATE_WARNING + " " : "";
+const DENSITY_INFO = (data) => {
   if (!data) {
-    return prefix + (isSurrogate
-      ? "Not yet estimated for this flight (or for this strategy)."
-      : "HYSPLIT backward-trajectory source density. Not yet computed for this flight (or for this strategy).");
+    return "HYSPLIT backward-trajectory source density. Not yet computed for this flight (or for this strategy).";
   }
-  const engine = isSurrogate ? "Surrogate model" : "HYSPLIT backward-trajectory";
-  return prefix + `${engine} source density: ${data.n_points_used} release points sampled along this ` +
+  return `HYSPLIT backward-trajectory source density: ${data.n_points_used} release points sampled along this ` +
     `flight's real trajectory (${STRATEGY_LABELS[data.strategy] || data.strategy} strategy), each weighted by ` +
     `modeled concentration × dust ingested at that point (${data.runtime_hours}h backward dispersion runs). ` +
-    (isSurrogate ? "Generated instantly via surrogate_backtrack.py." : "Generated offline via flight_backtrack.py.");
+    "Generated offline via flight_backtrack.py.";
 };
 
 // ---- MERRA-2 wind vectors (independent transport-direction cross-check) --
@@ -1410,7 +1486,7 @@ function windOverlayTraces(density, windData) {
 // switched flight or strategy. That let a stale "not computed" response
 // from a strategy the user had already clicked away from land on top of
 // the correct, already-computed result for whatever they're on now.
-async function loadWindVectors(flight, strategy, method, coastlines, borders, isStale) {
+async function loadWindVectors(flight, strategy, coastlines, borders, isStale) {
   if (!flight) return null;
   // This is a live MERRA-2 reanalysis lookup, not a local computation --
   // routinely 30-60s. Without this, the map just keeps showing plain
@@ -1420,7 +1496,7 @@ async function loadWindVectors(flight, strategy, method, coastlines, borders, is
   document.getElementById("ds-wind-status").textContent =
     "Loading MERRA-2 wind vectors… (~30-60s, live reanalysis lookup)";
   try {
-    const data = await fetchJSON(`/api/flight/${encodeURIComponent(flight.flight_id)}/wind_vectors?strategy=${strategy}&method=${method}`);
+    const data = await fetchJSON(`/api/flight/${encodeURIComponent(flight.flight_id)}/wind_vectors?strategy=${strategy}`);
     if (isStale && isStale()) return null;
     renderWindVectors(data);
     return data;
@@ -1458,15 +1534,37 @@ function renderAodAgreement(data) {
     `${pct(data.pct_aod_in_hysplit)} of the elevated-AOD area falls within HYSPLIT's high-density region.`;
 }
 
-async function loadAodAgreement(flight, strategy, method) {
+async function loadAodAgreement(flight, strategy) {
   if (!flight) return;
   const el = document.getElementById("ds-aod-agreement");
   try {
-    const data = await fetchJSON(`/api/flight/${encodeURIComponent(flight.flight_id)}/aod_agreement?strategy=${strategy}&method=${method}`);
+    const data = await fetchJSON(`/api/flight/${encodeURIComponent(flight.flight_id)}/aod_agreement?strategy=${strategy}`);
     renderAodAgreement(data);
   } catch (err) {
     console.error("aod_agreement fetch failed", err);
     el.textContent = "AOD agreement: failed to load, see console.";
+  }
+}
+
+// Set by setupAttributionTab() below to that tab's own loadFlight -- lets
+// other tabs jump a flight_id straight onto Dust source attribution without
+// duplicating its map-rendering logic. Shared by openFlightInDustSource()
+// (a plain jump, e.g. from the Routes tab's per-route flight list) and
+// viewFlightOnMap() (same jump, plus switching on susceptibility gating --
+// used by Data & validation's "View on map" links, where that's the point).
+let dsJumpToFlight = null;
+
+async function openFlightInDustSource(flightId) {
+  document.querySelector('[data-view="dustsource"]').click();
+  if (dsJumpToFlight) await dsJumpToFlight(flightId);
+}
+
+async function viewFlightOnMap(flightId) {
+  await openFlightInDustSource(flightId);
+  const gate = document.getElementById("ds-gate-toggle");
+  if (gate && !gate.checked) {
+    gate.checked = true;
+    gate.dispatchEvent(new Event("change"));
   }
 }
 
@@ -1495,22 +1593,9 @@ function setupAttributionTab() {
   });
   wireSusceptibilityLayerToggles();
 
-  // Not per-flight -- whether a trained model exists at all, so fetched
-  // once. The surrogate radio stays disabled until this confirms one is
-  // there (mirrors the MERRA-2/AOD panels' degrade-gracefully contract).
-  const surrogateInput = document.getElementById("ds-method-surrogate-input");
-  fetchJSON("/api/surrogate_status").then(status => {
-    if (status.available) surrogateInput.disabled = false;
-  });
-
   function currentStrategy() {
     const checked = document.querySelector('input[name="ds-strategy"]:checked');
     return checked ? checked.value : "topn";
-  }
-
-  function currentMethod() {
-    const checked = document.querySelector('input[name="ds-method"]:checked');
-    return checked ? checked.value : "hysplit";
   }
 
   // alt_min/alt_max are optional -- omitted entirely when blank, so the
@@ -1518,7 +1603,7 @@ function setupAttributionTab() {
   // the backend re-KDEs already-computed HYSPLIT output restricted to that
   // altitude band rather than requiring a new compute.
   function densityQueryParams() {
-    const params = new URLSearchParams({ strategy: currentStrategy(), method: currentMethod() });
+    const params = new URLSearchParams({ strategy: currentStrategy() });
     const altMin = document.getElementById("ds-alt-min-input").value;
     const altMax = document.getElementById("ds-alt-max-input").value;
     if (altMin !== "") params.set("alt_min", altMin);
@@ -1543,117 +1628,23 @@ function setupAttributionTab() {
     renderChart();
   }
 
-  // Overlays the OTHER method's result as outline contours on the SAME map,
-  // computing it first (via its own compute-job panel, sharing the same
-  // /api/flight/{id}/compute machinery the main Compute button uses) if it
-  // isn't already there. Once both are in hand, logs the pair to
-  // /api/surrogate/log_comparison so the Model performance tab's comparison
-  // table picks it up -- see that endpoint's docstring for why it's a log
-  // the user builds up here rather than a full filesystem scan.
-  let otherDensity = null;
-  const overlayToggle = document.getElementById("ds-overlay-toggle");
-  const overlayLabel = document.getElementById("ds-overlay-label");
-
-  function otherMethodOf() {
-    return currentMethod() === "surrogate" ? "hysplit" : "surrogate";
-  }
-
-  const overlayCompute = wireComputeJob({
-    getFlightId: () => currentFlight.flight_id,
-    getJob: () => "density",
-    getExtraParams: () => ({
-      strategy: currentStrategy(),
-      method: otherMethodOf(),
-      hours: document.getElementById("ds-hours-input").value,
-      points: document.getElementById("ds-points-input").value,
-    }),
-    panelId: "ds-overlay-compute-panel", btnId: "ds-overlay-compute-btn", statusId: "ds-overlay-compute-status",
-    onDone: loadOverlay,
-  });
-  const overlayComputeMessage = document.getElementById("ds-overlay-compute-message");
-
-  // Set once both grids are in hand and the backend has computed overlap
-  // stats for them (see /api/surrogate/log_comparison) -- read by
-  // overlayInfoText() below to show the same numbers the Model performance
-  // tab's comparison table will end up showing for this flight.
-  let overlapStats = null;
-
-  async function logComparison() {
-    try {
-      overlapStats = await fetchJSON("/api/surrogate/log_comparison", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ flight_id: currentFlight.flight_id, strategy: currentStrategy() }),
-      });
-    } catch (err) {
-      overlapStats = null;
-      console.error("failed to log surrogate comparison", err); // non-critical -- worst case it just won't show up in the Model performance table
-    }
-    renderChart(); // picks up overlapStats in the info text
-  }
-
-  async function loadOverlay() {
-    otherDensity = null;
-    overlapStats = null;
-    overlayLabel.textContent = otherMethodOf() === "surrogate" ? "⚡ surrogate estimate" : "HYSPLIT";
-    if (!overlayToggle.checked || !currentFlight || !currentDensity?.computed) {
-      overlayCompute.panel.hidden = true;
-      renderChart();
-      return;
-    }
-    const other = otherMethodOf();
-    const params = new URLSearchParams({ strategy: currentStrategy(), method: other });
-    const result = await fetchJSON(
-      `/api/flight/${encodeURIComponent(currentFlight.flight_id)}/dust_source_density?${params}`,
-    );
-    // Stale by the time this resolves (flight/strategy/method/toggle changed
-    // again) -- don't clobber whatever's now current with an old answer.
-    if (!overlayToggle.checked || currentDensity?.method !== currentMethod() || currentStrategy() !== params.get("strategy")) return;
-
-    if (!result.computed) {
-      overlayCompute.panel.hidden = false;
-      overlayComputeMessage.textContent =
-        `${overlayLabel.textContent} (${STRATEGY_LABELS[currentStrategy()]}) not yet computed for this flight.`;
-      renderChart();
-      return;
-    }
-    overlayCompute.panel.hidden = true;
-    overlayCompute.reset();
-    otherDensity = result;
-    renderChart();
-    logComparison();
-  }
-  overlayToggle.addEventListener("change", loadOverlay);
-
-  function overlayInfoText() {
-    if (!overlayToggle.checked || !otherDensity) return "";
-    const statsText = overlapStats
-      ? ` ${overlapStats.jaccard_pct.toFixed(0)}% Jaccard overlap of each method's top-${100 - overlapStats.percentile}% ` +
-        `density region (${overlapStats.pct_hysplit_in_surrogate.toFixed(0)}% of HYSPLIT's high-density area is also ` +
-        `flagged by the surrogate; ${overlapStats.pct_surrogate_in_hysplit.toFixed(0)}% the other way around).`
-      : " Computing overlap stats…";
-    return ` Overlaid (outline contours): ${overlayLabel.textContent} result for the same flight and strategy.` +
-      `${statsText} Logged to the Model performance tab.`;
-  }
-
-  // Refreshes every strategy-dependent panel for whatever flight/strategy/
-  // method is current -- shared by the strategy/method radio buttons AND by
-  // a compute job finishing. A compute job's own onDone used to only call
+  // Refreshes every strategy-dependent panel for whatever flight/strategy
+  // is current -- shared by the strategy radio buttons AND by a compute job
+  // finishing. A compute job's own onDone used to only call
   // loadDensityForStrategy(), so the MERRA-2/wind/AOD-agreement panels
   // kept showing whatever they last fetched (near-certainly a stale "not
   // computed yet" from before you clicked Compute) even after a fresh
   // result landed on the main map right above them.
   async function refreshStrategyPanels() {
     await loadDensityForStrategy();
-    loadOverlay();
-    const requestFlightId = currentFlight.flight_id, requestStrategy = currentStrategy(), requestMethod = currentMethod();
+    const requestFlightId = currentFlight.flight_id, requestStrategy = currentStrategy();
     loadWindVectors(
-      currentFlight, requestStrategy, requestMethod, coastlines, borders,
-      () => currentFlight?.flight_id !== requestFlightId || currentStrategy() !== requestStrategy || currentMethod() !== requestMethod,
+      currentFlight, requestStrategy, coastlines, borders,
+      () => currentFlight?.flight_id !== requestFlightId || currentStrategy() !== requestStrategy,
     ).then(d => {
       if (d) { currentWindData = d; renderChart(); }
     });
-    loadAodAgreement(currentFlight, currentStrategy(), currentMethod());
+    loadAodAgreement(currentFlight, currentStrategy());
   }
 
   const compute = wireComputeJob({
@@ -1661,7 +1652,6 @@ function setupAttributionTab() {
     getJob: () => "density",
     getExtraParams: () => ({
       strategy: currentStrategy(),
-      method: currentMethod(),
       hours: document.getElementById("ds-hours-input").value,
       points: document.getElementById("ds-points-input").value,
     }),
@@ -1673,26 +1663,22 @@ function setupAttributionTab() {
   function renderChart() {
     if (!currentFlight || !currentDensity) return;
 
-    const isSurrogate = currentMethod() === "surrogate";
-    const methodLabel = isSurrogate ? "⚡ surrogate estimate" : "HYSPLIT";
     const altSuffix = currentDensity?.filtered
       ? ` [${currentDensity.alt_min ?? "−∞"}–${currentDensity.alt_max ?? "∞"} ft]`
       : "";
-    const title = `Dust source attribution (${methodLabel}, ${STRATEGY_LABELS[currentStrategy()]}): ${flightLabel(currentFlight)}${altSuffix}`;
-    const exportName = `${currentFlight.flight_id}_dustsource_density_${currentStrategy()}_${currentMethod()}`;
+    const title = `Dust source attribution (HYSPLIT, ${STRATEGY_LABELS[currentStrategy()]}): ${flightLabel(currentFlight)}${altSuffix}`;
+    const exportName = `${currentFlight.flight_id}_dustsource_density_${currentStrategy()}`;
 
     if (!currentDensity.computed) {
       compute.panel.hidden = false;
-      computeMessage.textContent = isSurrogate
-        ? `Surrogate estimate (${STRATEGY_LABELS[currentStrategy()]}) not yet computed for this flight -- instant, no HYSPLIT install needed.`
-        : `HYSPLIT (${STRATEGY_LABELS[currentStrategy()]}) not yet computed for this flight.`;
+      computeMessage.textContent = `HYSPLIT (${STRATEGY_LABELS[currentStrategy()]}) not yet computed for this flight.`;
       Plotly.react(
         chartId, [coastlineTrace(coastlines), bordersTrace(borders)].filter(Boolean),
         baseLayout("Longitude", "Latitude"), PLOTLY_CONFIG,
       );
       ensureChartCard(chartId, {
         title, exportName,
-        infoText: DENSITY_INFO(null, isSurrogate),
+        infoText: DENSITY_INFO(null),
       });
       return;
     }
@@ -1726,6 +1712,7 @@ function setupAttributionTab() {
     const showLandImagery = document.getElementById("ds-landimg-toggle").checked;
     const showTerrain = document.getElementById("ds-terrain-toggle").checked;
     const showLST = document.getElementById("ds-lst-toggle").checked;
+    const showWorldCover = document.getElementById("ds-worldcover-toggle").checked;
     const showWindOverlay = document.getElementById("ds-wind-overlay-toggle").checked && windPoints.length > 0;
     const [bboxLons, bboxLats] = sourceGridBbox(currentFlight, currentDensity, susceptibility);
     const traces = [
@@ -1739,11 +1726,6 @@ function setupAttributionTab() {
         hovertemplate: "lon %{x:.2f}, lat %{y:.2f}<br>density %{z:.3g}<extra></extra>",
         name: gated ? "Source attribution (gated)" : "Source attribution", showlegend: false,
       },
-      (overlayToggle.checked && otherDensity) ? {
-        type: "contour", x: otherDensity.lon, y: otherDensity.lat, z: otherDensity.density,
-        contours: { coloring: "lines", showlabels: false }, line: { color: cssVar("--series-descent"), width: 2 },
-        showscale: false, hoverinfo: "skip", name: `${overlayLabel.textContent} (overlay)`,
-      } : null,
       coastlineTrace(coastlines),
       bordersTrace(borders),
       {
@@ -1767,10 +1749,12 @@ function setupAttributionTab() {
       layout.margin = { ...layout.margin, r: 140 };
       layout.annotations = windArrowAnnotations(windPoints);
     }
-    // Land imagery and terrain relief are independent toggles but both draw
-    // a background raster -- if both are on, terrain (checked second here)
-    // ends up on top since neither has any transparency to blend through.
-    if (showLandImagery || showTerrain) {
+    // Land imagery, terrain relief, land surface temperature, and land
+    // cover are independent toggles but all draw a background raster -- if
+    // more than one is on, the last one checked here ends up on top since
+    // none has any transparency to blend through (except WorldCover's own
+    // alpha for uncovered/ocean cells).
+    if (showLandImagery || showTerrain || showLST || showWorldCover) {
       const lonMin = Math.min(...bboxLons), lonMax = Math.max(...bboxLons);
       const latMin = Math.min(...bboxLats), latMax = Math.max(...bboxLats);
       const imageBase = {
@@ -1785,13 +1769,21 @@ function setupAttributionTab() {
         showTerrain
           ? { ...imageBase, source: gibsSnapshotUrl(TERRAIN_LAYER, currentFlight.date, lonMin, lonMax, latMin, latMax) }
           : null,
+        showLST
+          ? { ...imageBase, source: gibsSnapshotUrl(LST_LAYER, currentFlight.date, lonMin, lonMax, latMin, latMax) }
+          : null,
+        showWorldCover
+          ? { ...imageBase, source: worldcoverOverlayUrl(lonMin, lonMax, latMin, latMax) }
+          : null,
       ].filter(Boolean);
       // Visible without opening Info -- a raster background otherwise
       // carries no on-chart label of its own for which layer/date it is.
       // Concat (not overwrite) -- the wind overlay above may have already
       // populated layout.annotations with its arrows.
-      const bgLabel = [showLandImagery && "VIIRS true color", showTerrain && "ASTER GDEM shaded relief"]
-        .filter(Boolean).join(" + ");
+      const bgLabel = [
+        showLandImagery && "VIIRS true color", showTerrain && "ASTER GDEM shaded relief",
+        showLST && "MODIS land surface temp", showWorldCover && "ESA WorldCover land cover",
+      ].filter(Boolean).join(" + ");
       layout.annotations = (layout.annotations || []).concat([{
         text: `${bgLabel}, ${currentFlight.date}`, xref: "paper", yref: "paper",
         x: 0.01, y: 0.99, xanchor: "left", yanchor: "top", showarrow: false,
@@ -1799,10 +1791,11 @@ function setupAttributionTab() {
         bgcolor: cssVar("--surface-1"), bordercolor: cssVar("--border"), borderwidth: 1, borderpad: 4,
       }]);
     }
+    renderWorldCoverLegend(showWorldCover);
     Plotly.react(chartId, traces, layout, PLOTLY_CONFIG);
     ensureChartCard(chartId, {
       title, exportName,
-      infoText: DENSITY_INFO(currentDensity, isSurrogate) +
+      infoText: DENSITY_INFO(currentDensity) +
         (document.getElementById("ds-gate-toggle").checked
           ? (susceptibility
             ? ` Susceptibility-gated: ${gateInfoText(gateSelection())} are zeroed out, leaving only HYSPLIT-modeled source terrain that also has independent susceptibility support.`
@@ -1821,6 +1814,25 @@ function setupAttributionTab() {
             "directly, unobscured by cloud cover or vegetation. Not date-dependent (terrain doesn't change), " +
             "unlike the true-color imagery above."
           : "") +
+        (showLST
+          ? ` Background: MODIS Terra daytime land surface temperature for ${currentFlight.date}, via the ` +
+            "same NASA GIBS API -- ground temperature, not air temperature, so hot bare sand or rock reads " +
+            "yellow/orange and cooler vegetated or wet ground reads green. A rough proxy for exposed dry " +
+            "surface versus vegetation or moisture. Missing data shows two different ways, both real gaps, " +
+            "not a rendering issue: white patches are cloud cover that day; a solid black band is a genuine " +
+            "MODIS orbital-swath gap (unlike the true-color imagery toggle, which uses VIIRS specifically for " +
+            "its wider same-day coverage, there's no VIIRS land-surface-temperature product to switch to here). " +
+            "This layer is always the flight's own date, with no day-before/day-after option like the " +
+            "Satellite dust imagery panel below has for its own images -- if a gap lands on your area of " +
+            "interest, toggling this off is the only workaround for now."
+          : "") +
+        (showWorldCover
+          ? " Background: ESA WorldCover 2021 (10m) land-cover classification, read server-side from the " +
+            "product's own public tiles (no NASA GIBS equivalent exists for this one) and colored with its " +
+            "official 11-class legend -- swatch key underneath the map. Not date-dependent, like terrain " +
+            "relief above. Rendered at a decimated resolution for a quick-look overlay, not full 10m precision; " +
+            "transparent cells had no covering tile (open ocean, or a real gap in WorldCover's own grid)."
+          : "") +
         (showWindOverlay
           ? " Release points are colored by MERRA-2 wind vectors: an independent reanalysis's own wind field " +
             "(not derived from HYSPLIT, whose trajectories use separate, typically GDAS, met data) at each " +
@@ -1837,14 +1849,12 @@ function setupAttributionTab() {
             "changes over time and space, so the further the line runs, the less reliable the constant-wind " +
             "assumption gets. Compare where it points against HYSPLIT's own source region as a rough sanity check, " +
             "not a substitute for it."
-          : "") +
-        overlayInfoText(),
+          : ""),
     });
   }
 
   async function loadFlight(flightId) {
     compute.reset();
-    overlayCompute.reset();
     currentWindData = null;  // stale-cache guard -- don't let a toggle change mid-fetch re-render the previous flight's wind
     if (!flightId) { showFlightPickerEmpty(prefix); currentFlight = null; currentDensity = null; return; }
     try {
@@ -1870,18 +1880,17 @@ function setupAttributionTab() {
         fetchBordersForBbox(...bbox),
       ]);
       renderChart();
-      loadOverlay();
       // Guard against a stale ~30s-slow MERRA-2 fetch for a PREVIOUS flight
       // resolving after the user has already switched to a new one: only
       // apply the result if this is still the flight actually selected
       // when it lands, otherwise silently discard it.
       loadWindVectors(
-        currentFlight, currentStrategy(), currentMethod(), coastlines, borders,
+        currentFlight, currentStrategy(), coastlines, borders,
         () => currentFlight?.flight_id !== flightId,
       ).then(d => {
         if (d) { currentWindData = d; renderChart(); }
       });
-      loadAodAgreement(currentFlight, currentStrategy(), currentMethod());
+      loadAodAgreement(currentFlight, currentStrategy());
     } catch (err) {
       console.error(`${prefix}: failed to load flight ${flightId}`, err);
       showFlightPickerEmpty(prefix);
@@ -1889,6 +1898,8 @@ function setupAttributionTab() {
   }
 
   wireFlightPicker(prefix, loadFlight);
+  wireFlightSearch(prefix, loadFlight);
+  dsJumpToFlight = loadFlight;
   const gateToggle = document.getElementById(`${prefix}-gate-toggle`);
   const gateSettings = document.getElementById(`${prefix}-gate-settings`);
   gateToggle.addEventListener("change", () => {
@@ -1899,29 +1910,22 @@ function setupAttributionTab() {
   document.getElementById(`${prefix}-gate-mode`).addEventListener("change", renderChart);
   document.getElementById(`${prefix}-landimg-toggle`).addEventListener("change", renderChart);
   document.getElementById(`${prefix}-terrain-toggle`).addEventListener("change", renderChart);
+  document.getElementById(`${prefix}-lst-toggle`).addEventListener("change", renderChart);
+  document.getElementById(`${prefix}-worldcover-toggle`).addEventListener("change", renderChart);
   document.getElementById(`${prefix}-wind-overlay-toggle`).addEventListener("change", renderChart);
   document.getElementById(`${prefix}-backtraj-toggle`).addEventListener("change", renderChart);
   document.querySelectorAll('input[name="ds-strategy"]').forEach(input => {
     input.addEventListener("change", () => {
       compute.reset();
-      overlayCompute.reset();
       updateStrategyHint();
       if (!currentFlight) return;
       refreshStrategyPanels();
     });
   });
-  document.querySelectorAll('input[name="ds-method"]').forEach(input => {
-    input.addEventListener("change", () => {
-      compute.reset();
-      overlayCompute.reset();
-      if (!currentFlight) return;
-      refreshStrategyPanels();
-    });
-  });
   // Altitude band re-fetches just the density map, not the full compute --
-  // it re-KDEs already-computed HYSPLIT/surrogate output for a subset of
-  // release points, so it doesn't touch MERRA-2/wind/AOD-agreement (those
-  // work off the full release-point set regardless of this filter).
+  // it re-KDEs already-computed HYSPLIT output for a subset of release
+  // points, so it doesn't touch MERRA-2/wind/AOD-agreement (those work off
+  // the full release-point set regardless of this filter).
   const debouncedAltRefresh = debounce(() => { if (currentFlight) loadDensityForStrategy(); }, 400);
   document.getElementById("ds-alt-min-input").addEventListener("input", debouncedAltRefresh);
   document.getElementById("ds-alt-max-input").addEventListener("input", debouncedAltRefresh);
@@ -2087,6 +2091,7 @@ function initSingleFlightView() {
   document.getElementById("single-flight-select").addEventListener("change", (e) => {
     loadFlightDetail(e.target.value);
   });
+  wireFlightSearch("single", loadFlightDetail);
   loadFlightsForDate();
 }
 
@@ -2164,6 +2169,8 @@ function renderCompareSlots() {
           <span class="compare-slot-label">Flight ${i + 1}</span>
           ${compareSlots.length > COMPARE_MIN_SLOTS ? `<button type="button" class="compare-slot-remove" data-key="${slot.key}">Remove</button>` : ""}
         </div>
+        <input type="text" class="compare-slot-search select-input" data-key="${slot.key}" placeholder="Search to jump to a flight…" autocomplete="off">
+        <div class="compare-slot-search-results search-results" data-key="${slot.key}" hidden></div>
         <input type="date" class="compare-slot-date" data-key="${slot.key}" min="${defaults.date_min}" max="${defaults.date_max}" value="${slot.date}">
         <select class="compare-slot-flight" data-key="${slot.key}">${options}</select>
       </div>
@@ -2188,8 +2195,56 @@ function renderCompareSlots() {
       refreshComparison();
     });
   });
+  container.querySelectorAll(".compare-slot-search").forEach(input => {
+    const key = Number(input.dataset.key);
+    const results = container.querySelector(`.compare-slot-search-results[data-key="${key}"]`);
+    const runSearch = debounce(async () => {
+      const q = input.value.trim();
+      if (q.length < 2) { results.hidden = true; results.innerHTML = ""; return; }
+      let matches;
+      try {
+        matches = await fetchJSON(`/api/flight_search?q=${encodeURIComponent(q)}`);
+      } catch (err) {
+        console.error("compare slot search failed", err);
+        results.innerHTML = `<div class="search-result-empty">Search failed, see console.</div>`;
+        results.hidden = false;
+        return;
+      }
+      results.innerHTML = matches.length === 0
+        ? `<div class="search-result-empty">No matches.</div>`
+        : matches.map(m => {
+            const route = (m.origin_icao && m.destination_icao) ? `${m.origin_icao}→${m.destination_icao}` : "route unknown";
+            return `<button type="button" class="search-result-item" data-flight-id="${m.flight_id}" data-date="${m.date}" data-actype="${m.aircraft_type}">` +
+              `<strong>${m.callsign || "?"}</strong> ${m.registration || ""} — ${m.date} ${m.takeoff_hhmm} (${route})</button>`;
+          }).join("");
+      results.hidden = false;
+    }, 250);
+    input.addEventListener("input", runSearch);
+    results.addEventListener("click", (e) => {
+      const btn = e.target.closest(".search-result-item");
+      if (!btn) return;
+      selectCompareSlotSearchResult(key, btn.dataset.flightId, btn.dataset.date, btn.dataset.actype);
+    });
+  });
 
   document.getElementById("compare-add-slot").disabled = compareSlots.length >= COMPARE_MAX_SLOTS;
+}
+
+// Jumping via search needs to bypass the normal aircraft-type/date chain --
+// checks the matched flight's own aircraft-type box (if not already
+// checked) so the subsequent flights_on_date fetch can actually find it,
+// then sets date/flightId directly rather than requiring the user to
+// reproduce the same picks through the dropdowns.
+async function selectCompareSlotSearchResult(key, flightId, date, aircraftType) {
+  const slot = compareSlots.find(s => s.key === key);
+  if (!slot) return;
+  const cb = document.querySelector(`#compare-aircraft-checkboxes input[value="${CSS.escape(aircraftType)}"]`);
+  if (cb && !cb.checked) cb.checked = true;
+  slot.date = date;
+  await loadCompareSlotFlights(key);
+  slot.flightId = flightId;
+  renderCompareSlots();
+  refreshComparison();
 }
 
 function renderCompareLegend(flights) {
@@ -2305,6 +2360,14 @@ function setupCompareView() {
   renderCompareSlots();
   compareSlots.forEach(s => loadCompareSlotFlights(s.key));
   document.getElementById("compare-add-slot").addEventListener("click", addCompareSlot);
+  // One listener for the view's whole lifetime (unlike the per-slot search
+  // wiring above, which is re-attached to fresh elements every render) --
+  // queries fresh elements at click time, so it stays correct even though
+  // renderCompareSlots() keeps replacing the underlying DOM nodes.
+  document.addEventListener("click", (e) => {
+    if (e.target.closest(".compare-slot-search") || e.target.closest(".compare-slot-search-results")) return;
+    document.querySelectorAll(".compare-slot-search-results").forEach(el => { el.hidden = true; el.innerHTML = ""; });
+  });
 }
 
 // =========================================================================
@@ -2398,12 +2461,67 @@ function renderRoutesMap(routes) {
   });
 }
 
+async function loadRouteDetail(origin, destination, routeLabel) {
+  const panel = document.getElementById("routes-route-detail");
+  const title = document.getElementById("routes-route-detail-title");
+  const table = document.getElementById("routes-route-detail-table");
+  panel.hidden = false;
+  title.textContent = `Flights on ${routeLabel}`;
+  table.innerHTML = "<p class=\"hint\">Loading…</p>";
+  const filters = routesFilters();
+  const params = new URLSearchParams({
+    origin, destination,
+    aircraft_types: filters.aircraft_types.join(","),
+    date_from: filters.date_from, date_to: filters.date_to,
+  });
+  const flights = await fetchJSON(`/api/route_flights?${params}`);
+  if (flights.length === 0) {
+    table.innerHTML = "<p class=\"hint\">No flights found for the current filters.</p>";
+    return;
+  }
+  const columns = [
+    { key: "flight_id", label: "Flight" },
+    { key: "date", label: "Date" },
+    { key: "takeoff_hhmm", label: "Takeoff" },
+    { key: "callsign", label: "Callsign" },
+    { key: "registration", label: "Registration" },
+    { key: "aircraft_type", label: "Type" },
+    { key: "total_dust_g", label: "Total dust (g)" },
+  ];
+  const body = flights.map(f => `
+    <tr class="clickable-row" data-flight-id="${f.flight_id}">
+      <td>${f.flight_id}</td>
+      <td>${f.date}</td>
+      <td>${f.takeoff_hhmm}</td>
+      <td>${f.callsign ?? "—"}</td>
+      <td>${f.registration ?? "—"}</td>
+      <td>${f.aircraft_type}</td>
+      <td class="num">${fmt(f.total_dust_g)}</td>
+    </tr>
+  `).join("");
+  table.innerHTML = `
+    <p class="hint">Click a flight to open it on the Dust source attribution tab.</p>
+    <table class="data-table">
+      <thead><tr>${columns.map(c => `<th>${c.label}</th>`).join("")}</tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+    <button class="link-btn" id="export-route-detail" style="margin-top:8px;">Export CSV</button>
+  `;
+  document.getElementById("export-route-detail").addEventListener("click", () => {
+    exportTableAsCSV(flights, columns, `${origin}_${destination}_flights.csv`);
+  });
+  table.querySelectorAll("tr.clickable-row").forEach(row => {
+    row.addEventListener("click", () => openFlightInDustSource(row.dataset.flightId));
+  });
+}
+
 function renderRoutesTable(routes) {
   const container = document.getElementById("routes-table");
   ensureInfoOnlyCard("routes-table", {
     title: "All routes",
-    infoText: "Every route flown by the matching flights, sorted by total dust ingested. Mirrors the map above in table form, plus mean dust per timestep and flight counts.",
+    infoText: "Every route flown by the matching flights, sorted by total dust ingested. Mirrors the map above in table form, plus mean dust per timestep and flight counts. Click a row to see the individual flights on that route.",
   });
+  document.getElementById("routes-route-detail").hidden = true;
   if (routes.length === 0) {
     container.innerHTML = "<p class=\"hint\">No routes to show.</p>";
     return;
@@ -2415,7 +2533,7 @@ function renderRoutesTable(routes) {
     { key: "n_flights", label: "Flights" },
   ];
   const body = routes.map(r => `
-    <tr>
+    <tr class="clickable-row" data-origin="${r.origin}" data-destination="${r.destination}" data-route="${r.route}">
       <td>${r.route}</td>
       <td class="num">${fmt(r.total_dust)}</td>
       <td class="num">${fmt(r.mean_dust)}</td>
@@ -2423,6 +2541,7 @@ function renderRoutesTable(routes) {
     </tr>
   `).join("");
   container.innerHTML = `
+    <p class="hint">Click a row to see the individual flights on that route.</p>
     <table class="data-table">
       <thead><tr>${columns.map(c => `<th>${c.label}</th>`).join("")}</tr></thead>
       <tbody>${body}</tbody>
@@ -2431,6 +2550,11 @@ function renderRoutesTable(routes) {
   `;
   document.getElementById("export-routes").addEventListener("click", () => {
     exportTableAsCSV(routes, columns, "routes.csv");
+  });
+  container.querySelectorAll("tr.clickable-row").forEach(row => {
+    row.addEventListener("click", () => {
+      loadRouteDetail(row.dataset.origin, row.dataset.destination, row.dataset.route);
+    });
   });
 }
 
@@ -2479,52 +2603,120 @@ async function refreshRoutes() {
 }
 const debouncedRefreshRoutes = debounce(refreshRoutes, 300);
 
-function setupModelPerformanceView() {
-  const retrainBtn = document.getElementById("mp-retrain-btn");
-  const retrainStatus = document.getElementById("mp-retrain-status");
-  const fmt1 = v => v == null ? "—" : v.toFixed(1);
-  let pollTimer = null;
+// =========================================================================
+// DATA QUALITY VIEW
+// =========================================================================
 
-  function stopPolling() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+function renderDataQualityBreakdown(flights, totalsByType) {
+  const container = document.getElementById("dq-breakdown");
+  if (flights.length === 0) {
+    container.innerHTML = "";
+    return;
   }
+  const byType = new Map();
+  for (const f of flights) {
+    const type = f.aircraft_type || "unknown";
+    if (!byType.has(type)) byType.set(type, { total: 0, noData: 0 });
+    const entry = byType.get(type);
+    entry.total++;
+    if (!(f.n_rows || 0)) entry.noData++;
+  }
+  const rows = Array.from(byType.entries()).sort((a, b) => b[1].total - a[1].total);
+  const body = rows.map(([type, entry]) => {
+    // Share of THAT TYPE's own flights excluded -- not a share of all
+    // excluded flights -- so a type with few total flights but several
+    // excluded (e.g. 6/20) reads as the bigger problem it is, not just a
+    // small absolute count next to a type with thousands of flights.
+    const typeTotal = totalsByType?.[type];
+    const excludedPct = typeTotal ? (entry.total / typeTotal) * 100 : null;
+    return `
+    <tr>
+      <td>${type}</td>
+      <td class="num">${entry.total}</td>
+      <td class="num">${pct(excludedPct)}</td>
+      <td class="num">${entry.noData}</td>
+      <td class="num">${entry.total - entry.noData}</td>
+    </tr>
+  `;
+  }).join("");
+  container.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Aircraft type</th><th>Excluded</th><th>% of type's flights</th><th>No usable rows</th><th>Wrong first phase</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
 
-  async function loadStats() {
-    const status = await fetchJSON("/api/surrogate_status");
-    const cards = status.available
-      ? [
-          { label: "Training rows", value: status.n_training_rows?.toLocaleString() ?? "—" },
-          { label: "Training flights", value: status.n_training_flights?.toLocaleString() ?? "—" },
-          {
-            label: "CV MAE (log10 concentration)",
-            value: status.cv_mae != null
-              ? `${status.cv_mae.toFixed(3)} ± ${status.cv_mae_std?.toFixed(3) ?? "?"}`
-              : "not recorded (retrain to compute)",
-          },
-          {
-            label: "CV RMSE (log10 concentration)",
-            value: status.cv_rmse != null ? `${status.cv_rmse.toFixed(3)} ± ${status.cv_rmse_std?.toFixed(3) ?? "?"}` : "—",
-          },
-          {
-            label: "CV R²",
-            value: status.cv_r2 != null ? `${status.cv_r2.toFixed(3)} ± ${status.cv_r2_std?.toFixed(3) ?? "?"}` : "—",
-          },
-          { label: "Last trained", value: status.trained_utc ? new Date(status.trained_utc).toLocaleString() : "unknown" },
-        ]
-      : [{ label: "Model", value: "not trained yet -- click Retrain below" }];
-    document.getElementById("mp-stat-cards").innerHTML = cards.map(c => `
+function setupDataQualityView() {
+  async function refresh() {
+    const summary = document.getElementById("dq-summary");
+    const cards = document.getElementById("dq-stat-cards");
+    const table = document.getElementById("dq-table");
+    summary.textContent = "Loading…";
+    const data = await fetchJSON("/api/anomalous_flights");
+    if (!data.computed) {
+      cards.innerHTML = "";
+      summary.textContent = "Not available -- run build_dataset.py first (see dashboard/README.md).";
+      table.innerHTML = "";
+      document.getElementById("dq-breakdown").innerHTML = "";
+      return;
+    }
+    cards.innerHTML = [
+      { label: "Excluded flights", value: data.n_flights.toLocaleString() },
+      { label: "No usable rows at all", value: data.n_no_usable_rows.toLocaleString() },
+      { label: "First phase isn't CLIMB", value: data.n_wrong_first_phase.toLocaleString() },
+    ].map(c => `
       <div class="stat-card">
         <div class="label">${c.label}</div>
         <div class="value">${c.value}</div>
       </div>
     `).join("");
+    renderDataQualityBreakdown(data.flights, data.totals_by_type);
+    summary.textContent = data.n_flights === 0
+      ? "No excluded flights -- every flight in CSVFiles made it into the dashboard."
+      : "";
+    const columns = [
+      { key: "flight_id", label: "Flight" },
+      { key: "date", label: "Date" },
+      { key: "takeoff_hhmm", label: "Takeoff" },
+      { key: "callsign", label: "Callsign" },
+      { key: "registration", label: "Registration" },
+      { key: "aircraft_type", label: "Type" },
+      { key: "n_rows", label: "Usable rows" },
+      { key: "first_phase", label: "First phase" },
+      { key: "origin_icao", label: "Origin" },
+      { key: "destination_icao", label: "Destination" },
+    ];
+    const body = data.flights.map(f => `
+      <tr>
+        ${columns.map(c => `<td>${f[c.key] ?? "—"}</td>`).join("")}
+      </tr>
+    `).join("");
+    table.innerHTML = data.n_flights === 0 ? "" : `
+      <table class="data-table">
+        <thead><tr>${columns.map(c => `<th>${c.label}</th>`).join("")}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+      <button class="link-btn" id="export-dq" style="margin-top:8px;">Export CSV</button>
+    `;
+    if (data.n_flights > 0) {
+      document.getElementById("export-dq").addEventListener("click", () => {
+        exportTableAsCSV(data.flights, columns, "anomalous_flights.csv");
+      });
+    }
   }
 
-  // Shared by both sections below -- a plain distribution histogram of a
-  // 0-100 percentage across flights, so the mean/median in the summary
-  // line above it isn't the only view into the spread (a tight cluster
-  // around the mean reads very differently from a bimodal split, even
-  // with the same average).
+  // Lazy -- only reads the file once the user actually opens this tab.
+  document.querySelector('[data-view="dataquality"]').addEventListener("click", refresh);
+}
+
+function setupModelPerformanceView() {
+  const fmt1 = v => v == null ? "—" : v.toFixed(1);
+
+  // A plain distribution histogram of a 0-100 percentage across flights, so
+  // the mean/median in the summary line above it isn't the only view into
+  // the spread (a tight cluster around the mean reads very differently
+  // from a bimodal split, even with the same average).
   function renderPctHistogram(chartId, values, xLabel, color) {
     Plotly.react(
       chartId,
@@ -2538,52 +2730,57 @@ function setupModelPerformanceView() {
     );
   }
 
-  async function loadAgreement() {
-    const summary = document.getElementById("mp-agreement-summary");
-    const table = document.getElementById("mp-agreement-table");
+  async function loadCoverage() {
+    const cards = document.getElementById("mp-coverage-cards");
+    const summary = document.getElementById("mp-coverage-summary");
+    const log = document.getElementById("mp-coverage-log");
     summary.textContent = "Loading…";
-    const data = await fetchJSON("/api/surrogate/performance");
-    if (data.n_pairs === 0) {
-      summary.textContent = "Nothing compared yet -- on the Dust source attribution tab, check \"Overlay other method\" " +
-        "for a flight to compute and log a comparison here.";
-      table.innerHTML = "";
-      document.getElementById("chart-mp-agreement").innerHTML = "";
-      document.getElementById("chart-mp-hysplit-in-surrogate").innerHTML = "";
-      document.getElementById("chart-mp-surrogate-in-hysplit").innerHTML = "";
+    const data = await fetchJSON("/api/batch_compute_progress");
+    cards.innerHTML = [
+      { label: "Flights in CSVFiles", value: data.total_flights.toLocaleString() },
+      { label: "Have a real HYSPLIT result", value: data.computed.toLocaleString() },
+      { label: "Remaining", value: data.remaining.toLocaleString() },
+    ].map(c => `
+      <div class="stat-card">
+        <div class="label">${c.label}</div>
+        <div class="value">${c.value}</div>
+      </div>
+    `).join("");
+
+    if (!data.log_exists) {
+      summary.textContent = "No batch has been run on this machine yet (or run_all_flights.py's log -- " +
+        "kept outside OneDrive, see its docstring -- isn't reachable from here). The counts above still " +
+        "come straight from what's on disk.";
+      log.innerHTML = "";
       return;
     }
-    summary.textContent = `${data.n_pairs} flight(s) compared -- mean ${data.mean_jaccard_pct.toFixed(0)}%, ` +
-      `median ${data.median_jaccard_pct.toFixed(0)}% Jaccard overlap of each method's high-density region ` +
-      `(HYSPLIT area in surrogate: mean ${data.mean_pct_hysplit_in_surrogate.toFixed(0)}%, median ${data.median_pct_hysplit_in_surrogate.toFixed(0)}%; ` +
-      `surrogate area in HYSPLIT: mean ${data.mean_pct_surrogate_in_hysplit.toFixed(0)}%, median ${data.median_pct_surrogate_in_hysplit.toFixed(0)}%).`;
-    renderPctHistogram("chart-mp-agreement", data.pairs.map(p => p.jaccard_pct), "Jaccard overlap (%)", cssVar("--series-cruise"));
-    renderPctHistogram("chart-mp-hysplit-in-surrogate", data.pairs.map(p => p.pct_hysplit_in_surrogate), "% of HYSPLIT area in surrogate", cssVar("--series-climb"));
-    renderPctHistogram("chart-mp-surrogate-in-hysplit", data.pairs.map(p => p.pct_surrogate_in_hysplit), "% of surrogate area in HYSPLIT", cssVar("--series-descent"));
+    summary.textContent = `Last activity: ${data.last_activity_utc ?? "unknown"} -- ${data.log_ok} succeeded, ` +
+      `${data.log_other} failed or had no usable points, across every run_all_flights.py attempt logged here.`;
     const columns = [
+      { key: "timestamp_utc", label: "Time (UTC)" },
       { key: "flight_id", label: "Flight" },
-      { key: "jaccard_pct", label: "Jaccard %" },
-      { key: "pct_hysplit_in_surrogate", label: "% of HYSPLIT area in surrogate" },
-      { key: "pct_surrogate_in_hysplit", label: "% of surrogate area in HYSPLIT" },
+      { key: "status", label: "Status" },
+      { key: "elapsed_s", label: "Elapsed (s)" },
+      { key: "error", label: "Error" },
     ];
-    const body = data.pairs.map(p => `
+    const body = data.recent.map(r => `
       <tr>
-        <td>${p.flight_id}</td>
-        <td class="num">${fmt1(p.jaccard_pct)}</td>
-        <td class="num">${fmt1(p.pct_hysplit_in_surrogate)}</td>
-        <td class="num">${fmt1(p.pct_surrogate_in_hysplit)}</td>
+        <td>${r.timestamp_utc ?? "—"}</td>
+        <td>${r.flight_id ?? "—"}</td>
+        <td>${r.status ?? "—"}</td>
+        <td class="num">${r.elapsed_s ?? "—"}</td>
+        <td>${r.error ?? ""}</td>
       </tr>
     `).join("");
-    table.innerHTML = `
+    log.innerHTML = `
+      <p class="hint">Most recent ${data.recent.length} attempt(s):</p>
       <table class="data-table">
         <thead><tr>${columns.map(c => `<th>${c.label}</th>`).join("")}</tr></thead>
         <tbody>${body}</tbody>
       </table>
-      <button class="link-btn" id="export-mp-agreement" style="margin-top:8px;">Export CSV</button>
     `;
-    document.getElementById("export-mp-agreement").addEventListener("click", () => {
-      exportTableAsCSV(data.pairs, columns, "surrogate_vs_hysplit.csv");
-    });
   }
+  document.getElementById("mp-coverage-refresh-btn").addEventListener("click", loadCoverage);
 
   async function loadSusceptibilityAgreement() {
     const summary = document.getElementById("mp-susceptibility-summary");
@@ -2608,11 +2805,12 @@ function setupModelPerformanceView() {
       <tr>
         <td>${f.flight_id}</td>
         <td class="num">${fmt1(f.agreement_pct)}</td>
+        <td><button type="button" class="link-btn susceptibility-view-btn" data-flight-id="${f.flight_id}">View on map</button></td>
       </tr>
     `).join("");
     table.innerHTML = `
       <table class="data-table">
-        <thead><tr>${columns.map(c => `<th>${c.label}</th>`).join("")}</tr></thead>
+        <thead><tr>${columns.map(c => `<th>${c.label}</th>`).join("")}<th></th></tr></thead>
         <tbody>${body}</tbody>
       </table>
       <button class="link-btn" id="export-mp-susceptibility" style="margin-top:8px;">Export CSV</button>
@@ -2620,51 +2818,18 @@ function setupModelPerformanceView() {
     document.getElementById("export-mp-susceptibility").addEventListener("click", () => {
       exportTableAsCSV(data.flights, columns, "susceptibility_agreement.csv");
     });
+    table.querySelectorAll(".susceptibility-view-btn").forEach(btn => {
+      btn.addEventListener("click", () => viewFlightOnMap(btn.dataset.flightId));
+    });
   }
 
   function refresh() {
-    loadStats();
-    loadAgreement();
+    loadCoverage();
     loadSusceptibilityAgreement();
   }
 
-  async function pollRetrain() {
-    const data = await fetchJSON("/api/compute_status");
-    if (data.status === "running") {
-      if (data.job === "retrain") {
-        retrainStatus.textContent = `Running, ${formatElapsed(data.elapsed_s)} elapsed. ${(data.log_tail || []).slice(-1)[0] || ""}`;
-      }
-      return; // keep polling regardless -- if it's someone else's job (a per-flight compute), wait for it to clear
-    }
-    stopPolling();
-    retrainBtn.disabled = false;
-    if (data.job !== "retrain") return; // some other job finished; not ours to report on
-    if (data.status === "error") {
-      retrainStatus.textContent = `Failed: ${(data.log_tail || []).slice(-1)[0] || "see server log"}`;
-      return;
-    }
-    retrainStatus.textContent = "Done.";
-    refresh();
-  }
-
-  retrainBtn.addEventListener("click", async () => {
-    retrainBtn.disabled = true;
-    retrainStatus.textContent = "Starting…";
-    const res = await fetchJSON("/api/surrogate/retrain", { method: "POST" });
-    if (res.status === "busy") {
-      retrainStatus.textContent = `Busy: ${res.running.job} is already running. Try again once that finishes.`;
-      retrainBtn.disabled = false;
-      return;
-    }
-    retrainStatus.textContent = "Started. This can take a while with a lot of training data.";
-    stopPolling();
-    pollTimer = setInterval(pollRetrain, 5000);
-    pollRetrain();
-  });
-
-  // Lazy -- only hits the (potentially slow, filesystem-scanning)
-  // /api/surrogate/performance endpoint once the user actually opens this
-  // tab, not on every page load.
+  // Lazy -- only hits these (potentially slow, filesystem-scanning)
+  // endpoints once the user actually opens this tab, not on every page load.
   document.querySelector('[data-view="modelperf"]').addEventListener("click", refresh);
 }
 
@@ -3011,6 +3176,7 @@ function setupTabs() {
       document.getElementById("view-compare").hidden = view !== "compare";
       document.getElementById("view-filtercompare").hidden = view !== "filtercompare";
       document.getElementById("view-routes").hidden = view !== "routes";
+      document.getElementById("view-dataquality").hidden = view !== "dataquality";
       document.getElementById("view-modelperf").hidden = view !== "modelperf";
       setTimeout(() => {
         document.querySelectorAll(".chart").forEach(el => {
@@ -3062,6 +3228,7 @@ async function init() {
   setupCompareView();
   setupRoutesView();
   setupFilterCompareView();
+  setupDataQualityView();
   setupModelPerformanceView();
   setupTabs();
   setupAltitudeFilter();

@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dust Impact Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
@@ -62,7 +65,8 @@
   <button class="tab-btn" data-view="compare">Compare flights</button>
   <button class="tab-btn" data-view="filtercompare">Compare filters</button>
   <button class="tab-btn" data-view="routes">Routes</button>
-  <button class="tab-btn" data-view="modelperf">Model performance</button>
+  <button class="tab-btn" data-view="dataquality">Data quality</button>
+  <button class="tab-btn" data-view="modelperf">Data &amp; validation</button>
 </nav>
 
 <div class="about-page" id="view-about">
@@ -98,10 +102,16 @@
         (aircraft type, date, takeoff time, phase, altitude, location,
         registration) and see distributions, trends and rankings.</li>
         <li><strong>Single flight view</strong>: inspect one flight in full
-        detail: flight path, phase timeline, altitude, speed, dust profile.</li>
+        detail: flight path, phase timeline, altitude, speed, dust profile.
+        Use the search box to jump straight to a flight by callsign,
+        registration, or route instead of narrowing by aircraft type and
+        date first.</li>
         <li><strong>Dust source attribution</strong>: a HYSPLIT backward-
-        dispersion map of where a selected flight's dust likely originated. Can
-        compute it on demand for a flight that doesn't have it yet.</li>
+        dispersion map of where a selected flight's dust likely originated,
+        with optional true-color/terrain/land-surface-temperature imagery,
+        MERRA-2 wind vectors, MODIS AOD overlay, and a source-susceptibility
+        mask layered on top. Can compute it on demand for a flight that
+        doesn't have it yet. Has the same search box as Single flight view.</li>
         <li><strong>Compare flights</strong>: overlay 2 to 8 individual flights
         on the same charts, each in its own color.</li>
         <li><strong>Compare filters</strong>: hold a snapshot of the current
@@ -109,6 +119,13 @@
         another, then see them overlaid.</li>
         <li><strong>Routes</strong>: a geographic view of every route flown,
         colored by total dust ingested.</li>
+        <li><strong>Data quality</strong>: every flight excluded from the
+        rest of the dashboard (no usable rows, or a recording that appears
+        to start mid-flight), and why -- for spot-checking a new batch of
+        flight data.</li>
+        <li><strong>Data &amp; validation</strong>: how many flights have a
+        real HYSPLIT result computed yet, and how well that result agrees
+        with the independent soil/land-cover susceptibility grid.</li>
       </ul>
       <p>Every chart has its own <strong>ⓘ Info</strong> button explaining
       exactly what is plotted and how it is calculated.</p>
@@ -270,6 +287,12 @@
 <div class="layout" id="view-single" hidden>
   <aside class="filters">
     <details class="filter-group filter-group-collapsible" open>
+      <summary>Jump to flight</summary>
+      <input type="text" id="single-search-input" class="select-input" placeholder="Search callsign, registration, route…" autocomplete="off">
+      <div id="single-search-results" class="search-results" hidden></div>
+      <p class="hint">Jumps straight to a flight, independent of the filters below.</p>
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
       <summary>Aircraft type</summary>
       <div id="single-aircraft-checkboxes" class="checkbox-list"></div>
     </details>
@@ -324,6 +347,12 @@
 <div class="layout" id="view-dustsource" hidden>
   <aside class="filters">
     <details class="filter-group filter-group-collapsible" open>
+      <summary>Jump to flight</summary>
+      <input type="text" id="ds-search-input" class="select-input" placeholder="Search callsign, registration, route…" autocomplete="off">
+      <div id="ds-search-results" class="search-results" hidden></div>
+      <p class="hint">Jumps straight to a flight, independent of the filters below.</p>
+    </details>
+    <details class="filter-group filter-group-collapsible" open>
       <summary>Aircraft type</summary>
       <div id="ds-aircraft-checkboxes" class="checkbox-list"></div>
     </details>
@@ -349,10 +378,6 @@
             <label><input type="radio" name="ds-strategy" value="dense"> Dense (~1 point/min along route)</label>
           </div>
           <p id="ds-strategy-hint" class="hint"></p>
-          <div class="radio-row" id="ds-method-controls">
-            <label><input type="radio" name="ds-method" value="hysplit" checked> HYSPLIT</label>
-            <label><input type="radio" name="ds-method" value="surrogate" id="ds-method-surrogate-input" disabled> ⚡ Surrogate model (instant estimate)</label>
-          </div>
           <div class="runtime-select-row">
             <label class="runtime-select-label" id="ds-points-label">Number of points (N)
               <input type="number" id="ds-points-input" min="1" max="60" value="10">
@@ -369,7 +394,7 @@
               <input type="number" id="ds-alt-max-input" step="500" placeholder="no max">
             </label>
           </div>
-          <p class="hint">Optional -- limits the source map to release points within this altitude band. Reuses the already-computed HYSPLIT/surrogate result, no new compute needed. Leave blank for no limit.</p>
+          <p class="hint">Optional -- limits the source map to release points within this altitude band. Reuses the already-computed HYSPLIT result, no new compute needed. Leave blank for no limit.</p>
           <div id="ds-compute-panel" class="compute-panel" hidden>
             <p id="ds-compute-message">Not yet computed for this flight.</p>
             <button type="button" id="ds-compute-btn" class="link-btn">Compute dust source</button>
@@ -377,13 +402,13 @@
           </div>
           <h4>Map display</h4>
           <div class="radio-row">
-            <label><input type="checkbox" id="ds-gate-toggle"> Only show confirmed sources (susceptibility-gated)</label>
+            <label><input type="checkbox" id="ds-gate-toggle"> Only show susceptibility gated sources</label>
             <label><input type="checkbox" id="ds-landimg-toggle"> Show true-color land imagery</label>
             <label><input type="checkbox" id="ds-terrain-toggle"> Show terrain relief</label>
             <label><input type="checkbox" id="ds-lst-toggle"> Show land surface temperature</label>
+            <label><input type="checkbox" id="ds-worldcover-toggle"> Show land cover (ESA WorldCover)</label>
             <label><input type="checkbox" id="ds-wind-overlay-toggle" checked> Show MERRA-2 wind vectors</label>
             <label><input type="checkbox" id="ds-backtraj-toggle"> Show wind-only back-trajectory</label>
-            <label><input type="checkbox" id="ds-overlay-toggle"> Overlay <span id="ds-overlay-label">other method</span></label>
           </div>
           <div id="ds-gate-settings" class="compute-panel" hidden>
             <div class="checkbox-list" id="ds-gate-layer-checkboxes">
@@ -409,17 +434,13 @@
               <li><strong>Show true-color land imagery.</strong> Adds a real satellite photo of the ground (NASA VIIRS true-color, same day as the flight) as a background layer, so you can see actual terrain -- desert, vegetation, water, urban areas -- under the modeled source region instead of just blank map axes.</li>
               <li><strong>Show terrain relief.</strong> Adds a greyscale hillshade (NASA ASTER GDEM elevation model) as a background layer instead of a photo, so rugged/rocky terrain -- mountain ranges, escarpments, wadis -- is visible directly, unobscured by cloud cover or vegetation. Independent of the true-color imagery toggle above; both can be on at once (terrain draws on top).</li>
               <li><strong>Show land surface temperature.</strong> Adds MODIS ground temperature (same day as the flight) as a background layer -- hot bare sand/rock reads yellow/orange, cooler vegetated or wet ground reads green. A rough proxy for exposed dry surface versus vegetation or moisture. Independent of the other background toggles; any combination can be on at once.</li>
+              <li><strong>Show land cover (ESA WorldCover).</strong> Adds ESA's 10m global land-cover classification (2021) as a background layer -- 11 classes (tree cover, shrubland, grassland, cropland, built-up, bare/sparse vegetation, snow/ice, water, wetland, mangroves, moss/lichen), each its own color (see the swatch legend under the map once this is on). Not date-dependent, like terrain relief. Independent of the other background toggles.</li>
               <li><strong>Show MERRA-2 wind vectors.</strong> Colors each release point by how closely an independent weather reanalysis's wind direction agrees with the direction back to HYSPLIT's own modeled source (see the colorbar), plus an arrow showing which way that wind was actually blowing.</li>
               <li><strong>Show wind-only back-trajectory.</strong> Draws a straight line from each release point showing where the air would have come from if the wind measured there had stayed constant for a set number of hours. A simplified, independent check, not a full simulation like HYSPLIT.</li>
-              <li><strong>Overlay other method.</strong> Draws the OTHER method's result (surrogate if you're viewing HYSPLIT, or vice versa) as outlines on top of this map, plus how much their high-density regions overlap -- computes it first if it isn't already. Logged to the Model performance tab's comparison table.</li>
             </ul>
           </details>
-          <div id="ds-overlay-compute-panel" class="compute-panel" hidden>
-            <p id="ds-overlay-compute-message"></p>
-            <button type="button" id="ds-overlay-compute-btn" class="link-btn">Compute for overlay</button>
-            <p id="ds-overlay-compute-status" class="hint"></p>
-          </div>
           <div id="chart-ds-source" class="chart chart-tall"></div>
+          <div id="ds-worldcover-legend" class="worldcover-legend" hidden></div>
           <p id="ds-wind-status" class="hint"></p>
           <p id="ds-aod-agreement" class="hint"></p>
         </div>
@@ -573,6 +594,11 @@
         <div class="chart-card-header"></div>
         <div id="routes-table" class="table-wrap"></div>
       </div>
+      <div class="chart-card chart-card-wide" id="routes-route-detail" hidden>
+        <div class="chart-card-header"></div>
+        <h4 id="routes-route-detail-title"></h4>
+        <div id="routes-route-detail-table" class="table-wrap"></div>
+      </div>
     </div>
   </main>
 </div>
@@ -580,32 +606,18 @@
 <div class="layout" id="view-modelperf" hidden>
   <main class="content">
     <p class="tab-intro">
-      Tracks the trained HYSPLIT surrogate model itself: how much data it's trained on, how well it
-      cross-validates against flights it's never seen, and (below) how far its estimates land from real
-      HYSPLIT runs on flights that have both.
+      How much of the dataset has a real HYSPLIT result yet, and how well that HYSPLIT result agrees with
+      the independent susceptibility grid (soil type and land cover, built from entirely separate data).
     </p>
-    <div id="mp-stat-cards" class="stat-cards"></div>
     <div class="chart-grid">
       <div class="chart-card chart-card-wide">
         <div class="chart-card-header"></div>
-        <h4>Retrain</h4>
-        <p class="hint">Rebuilds the model from scratch using every combined_raw.csv currently on disk (hysplit_tools/surrogate_model.py). Takes a while once there's a lot of training data -- safe to leave this tab and come back.</p>
-        <div id="mp-retrain-panel" class="compute-panel">
-          <button type="button" id="mp-retrain-btn" class="link-btn">Retrain surrogate model</button>
-          <p id="mp-retrain-status" class="hint"></p>
-        </div>
-      </div>
-      <div class="chart-card chart-card-wide">
-        <div class="chart-card-header"></div>
-        <h4>Surrogate vs. real HYSPLIT</h4>
-        <p class="hint">For every flight with both a real HYSPLIT and a surrogate result computed (same strategy), how much the two methods' high-density source regions overlap (Jaccard, percentile-thresholded -- same method as the AOD agreement stat) -- a spot check of surrogate accuracy against real physics, independent of the training-time CV metrics above.</p>
-        <p id="mp-agreement-summary" class="hint"></p>
-        <div id="chart-mp-agreement" class="chart"></div>
-        <p class="hint"><strong>% of HYSPLIT area in surrogate</strong> -- of HYSPLIT's own high-density cells, how many the surrogate also flagged (a low value means the surrogate is missing real source region, a false negative).</p>
-        <div id="chart-mp-hysplit-in-surrogate" class="chart"></div>
-        <p class="hint"><strong>% of surrogate area in HYSPLIT</strong> -- of the surrogate's own high-density cells, how many HYSPLIT also flagged (a low value means the surrogate is guessing too wide, a false positive).</p>
-        <div id="chart-mp-surrogate-in-hysplit" class="chart"></div>
-        <div id="mp-agreement-table" class="table-wrap"></div>
+        <h4>HYSPLIT computation coverage</h4>
+        <p class="hint">How many flights in CSVFiles have a real HYSPLIT result yet -- run hysplit_tools/run_all_flights.py to compute more (see that script's own docstring for options). More computed flights also means a larger surrogate-model training set, if you use that separately.</p>
+        <div id="mp-coverage-cards" class="stat-cards"></div>
+        <p id="mp-coverage-summary" class="hint"></p>
+        <div id="mp-coverage-log" class="table-wrap"></div>
+        <button type="button" id="mp-coverage-refresh-btn" class="link-btn" style="margin-top:8px;">Refresh</button>
       </div>
       <div class="chart-card chart-card-wide">
         <div class="chart-card-header"></div>
@@ -615,6 +627,29 @@
         <div id="chart-mp-susceptibility" class="chart"></div>
         <div id="mp-susceptibility-table" class="table-wrap"></div>
       </div>
+    </div>
+  </main>
+</div>
+
+<div class="layout" id="view-dataquality" hidden>
+  <main class="content">
+    <p class="tab-intro">
+      Every flight build_dataset.py excluded from the whole dashboard (it can never appear in or skew any
+      chart, table, or picker), and why -- either no usable rows at all, or its first recorded phase isn't
+      <code>CLIMB</code> (the recording appears to start mid-flight). Read straight from
+      <code>data/anomalous_flights.csv</code>, kept in sync every time build_dataset.py is re-run.
+    </p>
+    <div id="dq-stat-cards" class="stat-cards"></div>
+    <div class="chart-card chart-card-wide">
+      <div class="chart-card-header"></div>
+      <h4>By aircraft type</h4>
+      <p class="hint">Whether exclusions cluster on one recording source rather than spreading evenly -- useful for spotting a specific feed with a data-quality problem.</p>
+      <div id="dq-breakdown" class="table-wrap"></div>
+    </div>
+    <div class="chart-card chart-card-wide">
+      <div class="chart-card-header"></div>
+      <p id="dq-summary" class="hint"></p>
+      <div id="dq-table" class="table-wrap"></div>
     </div>
   </main>
 </div>

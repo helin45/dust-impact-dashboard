@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -24,20 +25,57 @@ from datetime import datetime, timedelta, timezone
 import duckdb
 import numpy as np
 import pandas as pd
-import rasterio
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from rasterio.io import MemoryFile
-from rasterio.transform import from_origin
+
+# Optional -- GeoTIFF export and the WorldCover overlay are the only two
+# features that need it (see their endpoints below). Guarded the same way as
+# scikit-learn/earthaccess elsewhere in this file, since rasterio's compiled
+# GDAL binding has been observed to fail to load entirely on some locked-down
+# Windows machines (e.g. an Application Control policy blocking its DLLs) --
+# that shouldn't take down the rest of the dashboard.
+try:
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_origin
+    RASTERIO_IMPORT_ERROR = None
+except ImportError as _exc:
+    rasterio = Resampling = MemoryFile = from_origin = None
+    RASTERIO_IMPORT_ERROR = str(_exc)
+
+# Local-only fallback (see local_secrets.py) -- only fills in EARTHDATA_* if
+# they aren't already set in the real environment, so an OS-level/shell
+# override always wins.
+try:
+    import local_secrets
+    os.environ.setdefault("EARTHDATA_USERNAME", local_secrets.EARTHDATA_USERNAME)
+    os.environ.setdefault("EARTHDATA_PASSWORD", local_secrets.EARTHDATA_PASSWORD)
+except ImportError:
+    pass
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Loads EARTHDATA_USERNAME/EARTHDATA_PASSWORD (MERRA-2/AOD) and
+# EUMETSAT_CONSUMER_KEY/EUMETSAT_CONSUMER_SECRET (SEVIRI) from a local .env
+# file next to this script, if one exists -- see .env.example. Without this,
+# those credentials would need re-exporting in whatever shell launches
+# uvicorn every single time; a .env file survives restarts. override=False:
+# a real environment variable the shell already set still wins, .env is
+# only a fallback for what isn't already set.
+from dotenv import load_dotenv
+load_dotenv(SCRIPT_DIR / ".env", override=False)
+
 DATA_DIR = SCRIPT_DIR / "data"
-CSV_DIR = SCRIPT_DIR.parent / "CSVFiles"
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
 TIMESTEPS_PARQUET = DATA_DIR / "timesteps.parquet"
 FLIGHTS_PARQUET = DATA_DIR / "flights.parquet"
+# Written by build_dataset.py -- every flight excluded from timesteps.parquet
+# and why. Read back as-is by /api/anomalous_flights below, not re-derived.
+ANOMALOUS_FLIGHTS_PATH = DATA_DIR / "anomalous_flights.csv"
 # Precomputed by hysplit_tools/flight_backtrack.py (offline, on the HYSPLIT machine) --
 # this endpoint only ever reads a finished density_grid.json, never computes one.
 DUST_FILES_DIR = SCRIPT_DIR.parent / "hysplit_tools"
@@ -46,6 +84,7 @@ DUST_SOURCE_DIR = DUST_FILES_DIR / "hysplit_results" / "flights"
 sys.path.insert(0, str(DUST_FILES_DIR))
 import density_utils  # noqa: E402 -- needs DUST_FILES_DIR on sys.path first
 import flight_backtrack  # noqa: E402 -- reused only for flight_dir_for()'s strategy-namespacing logic below
+import run_all_flights  # noqa: E402 -- reused only for list_flight_ids()/already_computed()/LOG_PATH below
 # Safe to import unconditionally -- surrogate_backtrack.py only imports numpy/
 # pandas at module level; scikit-learn/joblib (optional, see requirements.txt)
 # are imported lazily inside it, only once a prediction is actually requested.
@@ -138,6 +177,31 @@ AIRPORTS = {
     "OOMS": {"country": "Oman", "city": "Muscat", "name": "Muscat Intl", "lat": 23.5933, "lon": 58.2844},
     "OTHH": {"country": "Qatar", "city": "Doha", "name": "Hamad Intl", "lat": 25.2609, "lon": 51.6138},
 }
+
+# ESA WorldCover 2021 (10m) discrete classification -- code -> (label, RGB).
+# The product's own official legend (confirmed via its Google Earth Engine
+# catalog entry, ESA_WorldCover_v200), not a hand-picked approximation --
+# same "real legend, not an approximation" standard as the AOD colorbar
+# elsewhere in this app. Shared with /api/worldcover_overlay below and
+# mirrored in static/app.js (WORLDCOVER_LEGEND there) for the on-page swatch
+# legend -- if this ever changes, update both.
+WORLDCOVER_LEGEND = {
+    10: ("Tree cover", (0, 100, 0)),
+    20: ("Shrubland", (255, 187, 34)),
+    30: ("Grassland", (255, 255, 76)),
+    40: ("Cropland", (240, 150, 255)),
+    50: ("Built-up", (250, 0, 0)),
+    60: ("Bare / sparse vegetation", (180, 180, 180)),
+    70: ("Snow and ice", (240, 240, 240)),
+    80: ("Permanent water bodies", (0, 100, 200)),
+    90: ("Herbaceous wetland", (0, 150, 160)),
+    95: ("Mangroves", (0, 207, 117)),
+    100: ("Moss and lichen", (250, 230, 160)),
+}
+# Same public, no-login S3 bucket and SW-corner 3deg tile naming
+# build_susceptibility_grid.py's own _worldcover_tiles() uses.
+WORLDCOVER_BASE_URL = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map"
+WORLDCOVER_TILE_DEG = 3
 
 if not TIMESTEPS_PARQUET.exists() or not FLIGHTS_PARQUET.exists():
     raise SystemExit(
@@ -647,14 +711,49 @@ def flights_on_date(date: str, aircraft_types: str = ""):
             ).df()
     # An all-NULL VARCHAR column (e.g. origin_icao on a date with only
     # A321 flights, which have no summary file) comes back from duckdb as
-    # a float64 NaN column; DataFrame.where(..., None) can't fix this in
-    # place since numpy float columns coerce None straight back to NaN,
-    # so swap NaN -> None on the plain Python floats after to_dict().
-    records = rows.to_dict(orient="records")
+    # a float64 NaN column -- see _records_with_nan_as_none() below for why
+    # that needs sweeping to None explicitly.
+    records = _records_with_nan_as_none(rows)
+    return records
+
+
+@app.get("/api/route_flights")
+def route_flights(origin: str, destination: str, aircraft_types: str = "",
+                   date_from: str = "", date_to: str = ""):
+    """
+    Individual flights making up one route on the Routes view -- that view
+    only ever shows route-level aggregates (total dust, flight count), so
+    this answers "which specific flights" once you've clicked one, using
+    the same aircraft-type/date-range filters currently set on that tab.
+    Same first_phase = 'CLIMB' usability filter as every other flight-
+    listing endpoint, and same NaN -> None cleanup as flights_on_date.
+    """
+    actypes = [a for a in aircraft_types.split(",") if a]
+    conditions = ["first_phase = 'CLIMB'", "origin_icao = ?", "destination_icao = ?"]
+    params = [origin, destination]
+    if actypes:
+        ph = ", ".join(["?"] * len(actypes))
+        conditions.append(f"aircraft_type IN ({ph})")
+        params.extend(actypes)
+    if date_from:
+        conditions.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("date <= ?")
+        params.append(date_to)
+    with db_lock:
+        rows = con.execute(
+            f"""
+            SELECT flight_id, date, takeoff_hhmm, callsign, registration, aircraft_type, total_dust_g
+            FROM flights
+            WHERE {' AND '.join(conditions)}
+            ORDER BY total_dust_g DESC
+            """,
+            params,
+        ).df()
+    records = _records_with_nan_as_none(rows)
     for record in records:
-        for key, value in record.items():
-            if isinstance(value, float) and math.isnan(value):
-                record[key] = None
+        record["date"] = str(record["date"])[:10]
     return records
 
 
@@ -823,6 +922,8 @@ def export_dust_source_density(flight_id: str, format: str = "csv",
     # origin at the top-left CORNER (half a cell north/west of the first
     # center), row 0 = north per GeoTIFF convention, so density (row 0 =
     # south, matching lat's ascending order) needs flipping vertically.
+    if rasterio is None:
+        raise HTTPException(503, f"GeoTIFF export unavailable: rasterio failed to import on this machine ({RASTERIO_IMPORT_ERROR}). CSV export still works.")
     dlon = lon[1] - lon[0]
     dlat = lat[1] - lat[0]
     transform = from_origin(lon[0] - dlon / 2, lat[-1] + dlat / 2, dlon, dlat)
@@ -1530,6 +1631,253 @@ def dust_susceptibility():
     if not SUSCEPTIBILITY_PATH.exists():
         return {"computed": False}
     return {"computed": True, **json.loads(SUSCEPTIBILITY_PATH.read_text())}
+
+
+def _records_with_nan_as_none(df):
+    """
+    Shared by the endpoints below -- DataFrame.to_dict(orient="records")
+    leaves NaN in place (it isn't valid JSON; FastAPI would serialize it as
+    the non-standard literal `NaN`, which strict JSON parsers reject), so
+    sweep it to None per-cell after conversion. Done on the plain Python
+    values from to_dict(), not on the DataFrame itself, since an
+    all-numeric-NaN VARCHAR column (e.g. no summary file for that aircraft
+    type) round-trips through pandas as float64 and DataFrame.where() can't
+    fix that in place -- see /api/flights_on_date, which had this exact bug.
+    """
+    records = df.to_dict(orient="records")
+    for record in records:
+        for key, value in record.items():
+            if isinstance(value, float) and math.isnan(value):
+                record[key] = None
+    return records
+
+
+@app.get("/api/anomalous_flights")
+def anomalous_flights():
+    """
+    Surfaces build_dataset.py's own data-quality record directly in the
+    dashboard, instead of requiring someone to open data/anomalous_flights.csv
+    by hand: every flight excluded from timesteps.parquet (so it can never
+    appear in or skew any chart, table, or picker), and why -- either no
+    usable (non-UNKNOWN-phase) rows at all, or its first recorded phase
+    isn't CLIMB (the recording appears to start mid-flight). Nothing here is
+    re-derived; it's exactly what build_dataset.py already decided, read
+    back as-is. Always 200 -- `computed` false just means build_dataset.py
+    hasn't been run yet (or hasn't produced this file, on an older run).
+    """
+    if not ANOMALOUS_FLIGHTS_PATH.exists():
+        return {"computed": False}
+    df = pd.read_csv(ANOMALOUS_FLIGHTS_PATH)
+    records = _records_with_nan_as_none(df)
+    n_no_usable_rows = sum(1 for r in records if not (r.get("n_rows") or 0))
+    # Denominator for the per-type breakdown's percentage column -- total
+    # flights of that type in flights.parquet (excluded + usable), not just
+    # the excluded count above, so "6 excluded" reads very differently for a
+    # type with 20 total flights vs. one with 5,000.
+    with db_lock:
+        totals_by_type = dict(con.execute(
+            "SELECT aircraft_type, COUNT(*) FROM flights GROUP BY aircraft_type"
+        ).fetchall())
+    return {
+        "computed": True,
+        "n_flights": len(records),
+        "n_no_usable_rows": n_no_usable_rows,
+        "n_wrong_first_phase": len(records) - n_no_usable_rows,
+        "flights": records,
+        "totals_by_type": totals_by_type,
+    }
+
+
+@app.get("/api/batch_compute_progress")
+def batch_compute_progress(strategy: str = flight_backtrack.STRATEGY_TOPN):
+    """
+    How much of CSVFiles has a real HYSPLIT result yet, for judging
+    training-data coverage and watching a run_all_flights.py batch progress
+    without tailing a log file by hand. Two independent parts:
+
+      - coverage: every flight_id in CSVFiles (same listing
+        run_all_flights.py itself uses), checked against the same
+        density_grid.json existence test that script uses to decide what's
+        left to do -- works even if no batch has ever been run on this
+        machine, since it's a direct filesystem check, not a log read.
+      - recent activity: the tail of batch_compute_log.csv, if
+        run_all_flights.py has been run here at least once. That log lives
+        outside OneDrive (see run_all_flights.LOG_PATH / backtrack.WORK_BASE)
+        specifically because OneDrive's sync churn was found to corrupt a
+        file appended to this often -- so this can only ever report on
+        activity from the machine open right now, not a batch running
+        elsewhere.
+    """
+    flight_ids = run_all_flights.list_flight_ids()
+    total = len(flight_ids)
+    done = sum(
+        1 for fid in flight_ids
+        if run_all_flights.already_computed(fid, strategy, flight_backtrack.METHOD_HYSPLIT)
+    )
+
+    log_path = run_all_flights.LOG_PATH
+    n_ok = n_other = 0
+    recent = []
+    last_activity_utc = None
+    if log_path.exists():
+        with open(log_path, newline="") as f:
+            log_rows = list(csv.DictReader(f))
+        for row in log_rows:
+            if row.get("status") == "ok":
+                n_ok += 1
+            else:
+                n_other += 1
+        recent = list(reversed(log_rows[-20:]))
+        if log_rows:
+            last_activity_utc = log_rows[-1].get("timestamp_utc")
+
+    return {
+        "strategy": strategy,
+        "total_flights": total,
+        "computed": done,
+        "remaining": total - done,
+        "log_exists": log_path.exists(),
+        "log_attempts": n_ok + n_other,
+        "log_ok": n_ok,
+        "log_other": n_other,
+        "last_activity_utc": last_activity_utc,
+        "recent": recent,
+    }
+
+
+@app.get("/api/flight_search")
+def flight_search(q: str, limit: int = 25):
+    """
+    Free-text jump-to-flight search across callsign, registration, ICAO
+    codes, and the flight_id itself -- an alternative to narrowing aircraft
+    type then date then picking from a dropdown, useful once there are
+    hundreds of flights and you already know roughly what you're looking
+    for. Same first_phase = 'CLIMB' usability filter /api/flights_on_date
+    applies, so a search result is always a flight the picker could
+    actually load. Substring match (case-insensitive), not a fuzzy search --
+    q shorter than 2 characters returns nothing rather than a huge list.
+    """
+    q = q.strip()
+    if len(q) < 2:
+        return []
+    like = f"%{q.upper()}%"
+    with db_lock:
+        rows = con.execute(
+            """
+            SELECT flight_id, date, takeoff_hhmm, callsign, registration, aircraft_type,
+                   origin_icao, destination_icao, total_dust_g
+            FROM flights
+            WHERE first_phase = 'CLIMB' AND (
+                UPPER(callsign) LIKE ? OR UPPER(registration) LIKE ? OR
+                UPPER(origin_icao) LIKE ? OR UPPER(destination_icao) LIKE ? OR
+                UPPER(flight_id) LIKE ?
+            )
+            ORDER BY date DESC, takeoff_hhmm DESC
+            LIMIT ?
+            """,
+            [like, like, like, like, like, limit],
+        ).df()
+    records = _records_with_nan_as_none(rows)
+    for record in records:
+        record["date"] = str(record["date"])[:10]
+    return records
+
+
+def _worldcover_tile_urls(lon_min, lon_max, lat_min, lat_max):
+    """Same SW-corner 3deg tile naming as build_susceptibility_grid.py's own _worldcover_tiles()."""
+    lon0 = int(np.floor(lon_min / WORLDCOVER_TILE_DEG) * WORLDCOVER_TILE_DEG)
+    lon1 = int(np.floor((lon_max - 1e-9) / WORLDCOVER_TILE_DEG) * WORLDCOVER_TILE_DEG)
+    lat0 = int(np.floor(lat_min / WORLDCOVER_TILE_DEG) * WORLDCOVER_TILE_DEG)
+    lat1 = int(np.floor((lat_max - 1e-9) / WORLDCOVER_TILE_DEG) * WORLDCOVER_TILE_DEG)
+    for lat in range(lat0, lat1 + 1, WORLDCOVER_TILE_DEG):
+        for lon in range(lon0, lon1 + 1, WORLDCOVER_TILE_DEG):
+            ns = f"N{lat:02d}" if lat >= 0 else f"S{-lat:02d}"
+            ew = f"E{lon:03d}" if lon >= 0 else f"W{-lon:03d}"
+            yield lon, lat, f"{WORLDCOVER_BASE_URL}/ESA_WorldCover_10m_2021_v200_{ns}{ew}_Map.tif"
+
+
+@app.get("/api/worldcover_overlay")
+def worldcover_overlay(lon_min: float, lon_max: float, lat_min: float, lat_max: float):
+    """
+    ESA WorldCover 2021 (10m) land-cover classification for the given
+    bounding box, rendered server-side as a color-coded PNG the frontend
+    drops straight into a Plotly layout image -- same visual slot as the
+    true-color/terrain/land-surface-temperature background toggles, except
+    those come pre-rendered from NASA GIBS's snapshot API and WorldCover has
+    no equivalent public snapshot service, so this builds one from the same
+    raw GeoTIFF tiles build_susceptibility_grid.py already reads (public,
+    no-login S3 bucket, read decimated over /vsicurl/ -- GDAL pulls
+    overview data only, never a full 10m tile).
+
+    Output capped at OUT_MAX_PX per side -- this is a quick-look overlay,
+    not a precision export (the CSV/GeoTIFF buttons elsewhere in this app
+    exist for that); a flight's bbox can span tens of degrees, which at
+    native 10m resolution would be tens of thousands of pixels per side.
+    Cells with no covering tile (ocean, or a real gap in WorldCover's own
+    grid) are fully transparent (alpha 0) rather than colored, so they read
+    as "no data" instead of a false class.
+    """
+    if rasterio is None:
+        raise HTTPException(503, f"WorldCover overlay unavailable: rasterio failed to import on this machine ({RASTERIO_IMPORT_ERROR}).")
+    OUT_MAX_PX = 900
+    span_lon, span_lat = lon_max - lon_min, lat_max - lat_min
+    if span_lon <= 0 or span_lat <= 0:
+        raise HTTPException(400, "lon_max must be > lon_min and lat_max must be > lat_min")
+    px_per_deg = OUT_MAX_PX / max(span_lon, span_lat)
+    out_w = max(1, round(span_lon * px_per_deg))
+    out_h = max(1, round(span_lat * px_per_deg))
+
+    classes = np.zeros((out_h, out_w), dtype=np.uint8)
+    covered = np.zeros((out_h, out_w), dtype=bool)
+    # Output pixel grid is north-up (row 0 = lat_max), the usual image
+    # convention -- matches how the frontend places it (imageBase's
+    # y: latMax, yanchor: "top" in app.js).
+    for lon0, lat0, url in _worldcover_tile_urls(lon_min, lon_max, lat_min, lat_max):
+        tile_lon_max, tile_lat_max = lon0 + WORLDCOVER_TILE_DEG, lat0 + WORLDCOVER_TILE_DEG
+        ov_lon_min, ov_lon_max = max(lon0, lon_min), min(tile_lon_max, lon_max)
+        ov_lat_min, ov_lat_max = max(lat0, lat_min), min(tile_lat_max, lat_max)
+        if ov_lon_min >= ov_lon_max or ov_lat_min >= ov_lat_max:
+            continue  # tile computed from floor() but doesn't actually reach into the requested bbox on this axis
+
+        col_lo = round((ov_lon_min - lon_min) * px_per_deg)
+        col_hi = round((ov_lon_max - lon_min) * px_per_deg)
+        row_lo = round((lat_max - ov_lat_max) * px_per_deg)
+        row_hi = round((lat_max - ov_lat_min) * px_per_deg)
+        if col_hi <= col_lo or row_hi <= row_lo:
+            continue
+
+        try:
+            with rasterio.open(f"/vsicurl/{url}") as src:
+                data = src.read(
+                    1,
+                    out_shape=(row_hi - row_lo, col_hi - col_lo),
+                    resampling=Resampling.mode,
+                )
+        except rasterio.errors.RasterioIOError:
+            continue  # no tile here -- likely an all-ocean gap in WorldCover's own grid
+        classes[row_lo:row_hi, col_lo:col_hi] = data
+        covered[row_lo:row_hi, col_lo:col_hi] = True
+
+    rgb = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    known = np.zeros((out_h, out_w), dtype=bool)
+    for code, (_, color) in WORLDCOVER_LEGEND.items():
+        cell_mask = classes == code
+        rgb[cell_mask] = color
+        known |= cell_mask
+    # A covered tile can still carry a raw value outside WORLDCOVER_LEGEND
+    # (WorldCover's own no-data code, 0, inside an otherwise-covered tile) --
+    # transparent like a genuinely missing tile, not opaque black, since
+    # that's not a real class either.
+    alpha = np.where(covered & known, 255, 0).astype(np.uint8)
+
+    with MemoryFile() as memfile:
+        with memfile.open(driver="PNG", height=out_h, width=out_w, count=4, dtype="uint8") as dst:
+            dst.write(rgb[:, :, 0], 1)
+            dst.write(rgb[:, :, 1], 2)
+            dst.write(rgb[:, :, 2], 3)
+            dst.write(alpha, 4)
+        png_bytes = memfile.read()
+    return Response(png_bytes, media_type="image/png")
 
 
 def _clip_segments_to_bbox(segments, lon_min, lon_max, lat_min, lat_max):

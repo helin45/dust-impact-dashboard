@@ -11,6 +11,8 @@ hysplit_results/
 # --- credentials / local config ---
 .env
 .env.*
+!.env.example
+local_secrets.py
 
 # --- logs ---
 *.log

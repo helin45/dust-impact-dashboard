@@ -23,11 +23,12 @@ Re-run after build_dataset.py any time new no-summary-file flights appear.
 
 from pathlib import Path
 import math
+import os
 
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CSV_DIR = SCRIPT_DIR.parent / "CSVFiles"
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
 FLIGHTS_PARQUET = SCRIPT_DIR / "data" / "flights.parquet"
 
 # Same 11 airports as app.py's AIRPORTS dict -- kept in sync manually since

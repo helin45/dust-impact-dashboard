@@ -8,6 +8,7 @@ scipy
 matplotlib
 rasterio
 requests
+python-dotenv
 # Needed to TRAIN or RUN the HYSPLIT surrogate model (hysplit_tools/
 # surrogate_model.py / surrogate_backtrack.py, "surrogate" method on the dust
 # source attribution tab). The dashboard itself starts fine without these --
@@ -24,3 +25,4 @@ joblib
 earthaccess
 xarray
 h5netcdf
+netCDF4

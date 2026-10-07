@@ -1,12 +1,12 @@
 :root {
   color-scheme: light;
-  --surface-1: #fcfcfb;
-  --page: #f9f9f7;
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted: #898781;
-  --gridline: #e1e0d9;
-  --baseline: #c3c2b7;
+  --surface-1: #eef6fc;
+  --page: #dceaf7;
+  --text-primary: #000000;
+  --text-secondary: #000000;
+  --text-muted: #000000;
+  --gridline: #c7dcee;
+  --baseline: #a9c6de;
   --border: rgba(11, 11, 11, 0.10);
 
   --series-climb: #2a78d6;
@@ -89,7 +89,7 @@
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   background: var(--page);
   color: var(--text-primary);
 }
@@ -510,6 +510,40 @@ body {
   opacity: 0.5;
 }
 
+.search-results {
+  position: relative;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+}
+.search-result-item {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.search-result-item:last-child {
+  border-bottom: none;
+}
+.search-result-item:hover {
+  background: var(--page);
+}
+.search-result-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 8px;
+}
+
 #location-fields {
   display: flex;
   flex-direction: column;
@@ -899,4 +933,36 @@ table.data-table th {
 }
 table.data-table td.num {
   font-variant-numeric: tabular-nums;
+}
+table.data-table tr.clickable-row {
+  cursor: pointer;
+}
+table.data-table tr.clickable-row:hover {
+  background: var(--page);
+}
+
+.worldcover-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+}
+.worldcover-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.worldcover-swatch {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  flex: none;
 }

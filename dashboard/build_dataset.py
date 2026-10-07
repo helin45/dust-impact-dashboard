@@ -23,6 +23,7 @@ Re-run this script whenever CSVFiles gains new flights or aircraft types:
 
 import concurrent.futures
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -55,7 +56,7 @@ def _read_csv_bounded(path, usecols, timeout=90.0, attempts=3):
     raise last_exc
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CSV_DIR = SCRIPT_DIR.parent / "CSVFiles"
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
 OUT_DIR = SCRIPT_DIR / "data"
 
 TIMESTEP_COLS = ["phase", "Flight_Time_Seconds", "Alt_ft", "CoreDustIngested_g"]

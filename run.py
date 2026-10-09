@@ -94,6 +94,7 @@ def count_flights(csv_dir):
 
 
 def resolve_csv_dir(arg):
+    """Returns (csv_dir, n_flights), or (None, 0) when the default CSVFiles/ folder has no data yet."""
     default = ROOT / "CSVFiles"
     chosen = arg or os.environ.get("DUST_CSV_DIR")
     csv_dir = Path(chosen).expanduser().resolve() if chosen else default
@@ -101,14 +102,27 @@ def resolve_csv_dir(arg):
         if chosen:
             die(f"CSV folder not found: {csv_dir}")
         csv_dir.mkdir()
-        die(f"no flight data yet. Put your per-flight CSVs in:\n  {csv_dir}\n"
-            "(or run: python run.py --csv-dir <folder>, or try: python run.py --demo). "
-            "Expected CSV format: see README.md.")
     n = count_flights(csv_dir)
     if n == 0:
-        die(f"no flight CSVs found in {csv_dir}. Expected CSV format: see README.md "
-            "(or try: python run.py --demo).")
+        if chosen:
+            die(f"no flight CSVs found in {csv_dir}. Expected CSV format: see README.md.")
+        return None, 0
     return csv_dir, n
+
+
+def offer_demo():
+    """No data in the default folder: offer the demo at a terminal, otherwise explain and stop."""
+    msg = (f"no flight data yet. Put your per-flight CSVs in {ROOT / 'CSVFiles'} "
+           "(or use --csv-dir <folder>); the expected format is in README.md.")
+    if not sys.stdin.isatty():
+        die(msg + " To try the dashboard without data, run: python run.py --demo")
+    print(f"\n[run] {msg}", flush=True)
+    try:
+        answer = input("[run] Run the demo with built-in synthetic flights instead? [Y/n] ").strip().lower()
+    except EOFError:
+        answer = "n"
+    if answer not in ("", "y", "yes"):
+        die("nothing to run. Add your CSVs, or start the demo any time with: python run.py --demo")
 
 
 def prepare_demo(force):
@@ -183,12 +197,17 @@ def main():
         die(f"Python {MIN_PY[0]}.{MIN_PY[1]} or newer is required (this is {sys.version.split()[0]}).")
     if args.demo and args.csv_dir:
         die("--demo and --csv-dir cannot be used together.")
-    if args.demo:
+    use_demo = args.demo
+    if not use_demo:
+        csv_dir, n_csv = resolve_csv_dir(args.csv_dir)
+        if csv_dir is None:
+            offer_demo()
+            use_demo = True
+    if use_demo:
         csv_dir, n_csv = prepare_demo(args.rebuild)
         data_dir = DEMO_DIR / "data"
         say("DEMO MODE: every flight is synthetic (randomly generated), not real data")
     else:
-        csv_dir, n_csv = resolve_csv_dir(args.csv_dir)
         data_dir = DASH / "data"
     if port_in_use(args.host, args.port):
         die(f"port {args.port} is already in use (is the dashboard already running?). Try --port {args.port + 1}.")
@@ -197,7 +216,7 @@ def main():
     if ensure_requirements(args.reinstall):
         preflight()
     env = {**os.environ, "DUST_CSV_DIR": str(csv_dir), "DUST_DATA_DIR": str(data_dir), "PYTHONUNBUFFERED": "1"}
-    if args.demo:
+    if use_demo:
         env["DUST_DEMO"] = "1"
     else:
         env.pop("DUST_DEMO", None)

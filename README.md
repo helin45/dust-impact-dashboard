@@ -38,6 +38,10 @@ so; it only exists to show what the dashboard looks like. Demo data is kept in
 `.demo/` and never touches a real dataset. The dust source map still needs a
 HYSPLIT install (see below), so it stays empty in the demo.
 
+If you run `python run.py` before adding any flight data, it offers to start the
+demo for you (press Enter to accept). On Windows, `start_demo.bat` starts the
+demo with a double-click.
+
 The first run creates a `.venv` folder, installs the requirements (a few
 minutes), builds the dataset from your CSVs (how long depends on how many you
 have), starts the server and opens <http://localhost:8000>. Later runs skip

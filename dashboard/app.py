@@ -33,7 +33,7 @@ from pydantic import BaseModel
 
 # Optional -- GeoTIFF export and the WorldCover overlay are the only two
 # features that need it (see their endpoints below). Guarded the same way as
-# scikit-learn/earthaccess elsewhere in this file, since rasterio's compiled
+# earthaccess elsewhere in this file, since rasterio's compiled
 # GDAL binding has been observed to fail to load entirely on some locked-down
 # Windows machines (e.g. an Application Control policy blocking its DLLs) --
 # that shouldn't take down the rest of the dashboard.
@@ -85,10 +85,6 @@ sys.path.insert(0, str(DUST_FILES_DIR))
 import density_utils  # noqa: E402 -- needs DUST_FILES_DIR on sys.path first
 import flight_backtrack  # noqa: E402 -- reused only for flight_dir_for()'s strategy-namespacing logic below
 import run_all_flights  # noqa: E402 -- reused only for list_flight_ids()/already_computed()/LOG_PATH below
-# Safe to import unconditionally -- surrogate_backtrack.py only imports numpy/
-# pandas at module level; scikit-learn/joblib (optional, see requirements.txt)
-# are imported lazily inside it, only once a prediction is actually requested.
-import surrogate_backtrack  # noqa: E402
 
 try:
     # Same coastline data the offline matplotlib tool draws with (see
@@ -805,10 +801,9 @@ def flight_detail(flight_id: str):
 
 @app.get("/api/flight/{flight_id}/dust_source_density")
 def flight_dust_source_density(flight_id: str, alt_min: float | None = None, alt_max: float | None = None,
-                                strategy: str = flight_backtrack.STRATEGY_TOPN,
-                                method: str = flight_backtrack.METHOD_HYSPLIT):
+                                strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
-    Serves the precomputed HYSPLIT (or surrogate-model) backward-trajectory
+    Serves the precomputed HYSPLIT backward-trajectory
     source density for one flight, if flight_backtrack.py has been run for
     it. Always 200 -- the frontend distinguishes "not computed yet" via the
     `computed` flag rather than an HTTP error, since that's an expected,
@@ -818,9 +813,6 @@ def flight_dust_source_density(flight_id: str, alt_min: float | None = None, alt
     results to serve -- each is computed and stored independently (see
     flight_backtrack.flight_dir_for()), since they represent genuinely
     different release-point sets, not variations to be pooled together.
-    `method` (hysplit/surrogate) similarly selects which runner's results to
-    serve -- a real simulation and the fast approximation are never mixed
-    together into one result.
 
     With alt_min/alt_max given, rebuilds the density grid from just the
     release points whose alt_ft falls in that band -- answering "where does
@@ -832,20 +824,18 @@ def flight_dust_source_density(flight_id: str, alt_min: float | None = None, alt
     """
     if strategy not in flight_backtrack.STRATEGIES:
         raise HTTPException(400, f"unknown strategy {strategy!r}, expected one of {flight_backtrack.STRATEGIES}")
-    if method not in flight_backtrack.METHODS:
-        raise HTTPException(400, f"unknown method {method!r}, expected one of {flight_backtrack.METHODS}")
-    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method))
+    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy))
     path = flight_dir / "density_grid.json"
     if not path.exists():
-        return {"computed": False, "flight_id": flight_id, "strategy": strategy, "method": method}
+        return {"computed": False, "flight_id": flight_id, "strategy": strategy}
     data = json.loads(path.read_text())
 
     if alt_min is None and alt_max is None:
-        return {"computed": True, "strategy": strategy, "method": method, **data}
+        return {"computed": True, "strategy": strategy, **data}
 
     combined_path = flight_dir / "combined_raw.csv"
     if not combined_path.exists():
-        return {"computed": True, "strategy": strategy, "method": method, **data}  # density_grid.json exists but combined_raw.csv doesn't -- serve unfiltered rather than fail
+        return {"computed": True, "strategy": strategy, **data}  # density_grid.json exists but combined_raw.csv doesn't -- serve unfiltered rather than fail
 
     lo = alt_min if alt_min is not None else float("-inf")
     hi = alt_max if alt_max is not None else float("inf")
@@ -858,7 +848,7 @@ def flight_dust_source_density(flight_id: str, alt_min: float | None = None, alt
     mask = weight > 0
     if mask.sum() < 2:  # gaussian_kde needs enough points for a non-singular covariance
         return {
-            "computed": True, "flight_id": flight_id, "strategy": strategy, "method": method, "filtered": True,
+            "computed": True, "flight_id": flight_id, "strategy": strategy, "filtered": True,
             "alt_min": alt_min, "alt_max": alt_max, "insufficient_data": True,
             "n_points_used": len(band_points), "release_points": band_points,
         }
@@ -867,7 +857,7 @@ def flight_dust_source_density(flight_id: str, alt_min: float | None = None, alt
         combined["LAT"].to_numpy(), combined["LON"].to_numpy(), weight.to_numpy(),
     )
     return {
-        "computed": True, "flight_id": flight_id, "strategy": strategy, "method": method, "filtered": True,
+        "computed": True, "flight_id": flight_id, "strategy": strategy, "filtered": True,
         "alt_min": alt_min, "alt_max": alt_max,
         "runtime_hours": data.get("runtime_hours"),
         "n_points_used": len(band_points),
@@ -878,8 +868,7 @@ def flight_dust_source_density(flight_id: str, alt_min: float | None = None, alt
 
 @app.get("/api/flight/{flight_id}/dust_source_density/export")
 def export_dust_source_density(flight_id: str, format: str = "csv",
-                                strategy: str = flight_backtrack.STRATEGY_TOPN,
-                                method: str = flight_backtrack.METHOD_HYSPLIT):
+                                strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
     Downloadable export of a computed density grid, for actual GIS work
     instead of just a chart screenshot. `density` in density_grid.json is a
@@ -887,18 +876,14 @@ def export_dust_source_density(flight_id: str, format: str = "csv",
     cell centers (see flight_backtrack.build_flight_density) -- so density[i][j]
     is the cell at (lat[i], lon[j]).
 
-    `strategy`/`method` pick which computed result to export -- same
-    selectors as /dust_source_density, defaulting to the original topn/
-    hysplit combination for backward compatibility with any existing link
-    that only ever passed flight_id/format.
+    `strategy` picks which computed result to export -- same selector as
+    /dust_source_density, defaulting to topn.
     """
     if strategy not in flight_backtrack.STRATEGIES:
         raise HTTPException(400, f"unknown strategy {strategy!r}, expected one of {flight_backtrack.STRATEGIES}")
-    if method not in flight_backtrack.METHODS:
-        raise HTTPException(400, f"unknown method {method!r}, expected one of {flight_backtrack.METHODS}")
-    path = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method)) / "density_grid.json"
+    path = Path(flight_backtrack.flight_dir_for(flight_id, strategy)) / "density_grid.json"
     if not path.exists():
-        raise HTTPException(404, f"dust source density not yet computed for {flight_id!r} ({strategy}/{method})")
+        raise HTTPException(404, f"dust source density not yet computed for {flight_id!r} ({strategy})")
     if format not in ("csv", "geotiff"):
         raise HTTPException(400, f"format must be 'csv' or 'geotiff', got {format!r}")
 
@@ -942,8 +927,7 @@ def export_dust_source_density(flight_id: str, format: str = "csv",
 
 
 @app.get("/api/flight/{flight_id}/merra2_validation")
-def flight_merra2_validation(flight_id: str, strategy: str = flight_backtrack.STRATEGY_TOPN,
-                              method: str = flight_backtrack.METHOD_HYSPLIT):
+def flight_merra2_validation(flight_id: str, strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
     Validates this flight's HYSPLIT release points against NASA's MERRA-2
     reanalysis (see hysplit_tools/merra2_utils.py), two ways at once since both
@@ -964,10 +948,10 @@ def flight_merra2_validation(flight_id: str, strategy: str = flight_backtrack.ST
     "error" field instead of values, so one bad point doesn't blank the
     whole response.
     """
-    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method))
+    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy))
     density_path = flight_dir / "density_grid.json"
     if not density_path.exists():
-        return {"computed": False, "flight_id": flight_id, "strategy": strategy, "method": method}
+        return {"computed": False, "flight_id": flight_id, "strategy": strategy}
 
     try:
         import merra2_utils
@@ -1000,7 +984,7 @@ def flight_merra2_validation(flight_id: str, strategy: str = flight_backtrack.ST
             entry["error"] = str(e)
         results.append(entry)
 
-    return {"computed": True, "configured": True, "flight_id": flight_id, "strategy": strategy, "method": method, "points": results}
+    return {"computed": True, "configured": True, "flight_id": flight_id, "strategy": strategy, "points": results}
 
 
 def _bearing_deg(lat1, lon1, lat2, lon2):
@@ -1018,8 +1002,7 @@ def _angle_diff_deg(a, b):
 
 
 @app.get("/api/flight/{flight_id}/wind_vectors")
-def flight_wind_vectors(flight_id: str, strategy: str = flight_backtrack.STRATEGY_TOPN,
-                         method: str = flight_backtrack.METHOD_HYSPLIT):
+def flight_wind_vectors(flight_id: str, strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
     MERRA-2 wind vector (speed + from-direction) at each HYSPLIT release
     point's real lat/lon/alt_ft/time -- an independent physical cross-check
@@ -1033,10 +1016,10 @@ def flight_wind_vectors(flight_id: str, strategy: str = flight_backtrack.STRATEG
     implies. Same always-200 computed/configured contract, with per-point
     "error" on individual lookup failures, as /merra2_validation above.
     """
-    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method))
+    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy))
     density_path = flight_dir / "density_grid.json"
     if not density_path.exists():
-        return {"computed": False, "flight_id": flight_id, "strategy": strategy, "method": method}
+        return {"computed": False, "flight_id": flight_id, "strategy": strategy}
 
     try:
         import merra2_utils
@@ -1125,7 +1108,7 @@ def flight_wind_vectors(flight_id: str, strategy: str = flight_backtrack.STRATEG
             surface_uplift = {"error": str(e)}
 
     return {
-        "computed": True, "configured": True, "flight_id": flight_id, "strategy": strategy, "method": method,
+        "computed": True, "configured": True, "flight_id": flight_id, "strategy": strategy,
         "centroid_lat": centroid_lat, "centroid_lon": centroid_lon, "points": results,
         "surface_uplift": surface_uplift,
     }
@@ -1133,7 +1116,6 @@ def flight_wind_vectors(flight_id: str, strategy: str = flight_backtrack.STRATEG
 
 @app.get("/api/flight/{flight_id}/aod_agreement")
 def flight_aod_agreement(flight_id: str, strategy: str = flight_backtrack.STRATEGY_TOPN,
-                          method: str = flight_backtrack.METHOD_HYSPLIT,
                           density_percentile: float = 75, aod_threshold: float = 0.3):
     """
     Quantifies spatial agreement between this flight's HYSPLIT source
@@ -1146,10 +1128,10 @@ def flight_aod_agreement(flight_id: str, strategy: str = flight_backtrack.STRATE
     computed/configured always-200 contract as the other dust-source
     endpoints.
     """
-    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method))
+    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy))
     density_path = flight_dir / "density_grid.json"
     if not density_path.exists():
-        return {"computed": False, "flight_id": flight_id, "strategy": strategy, "method": method}
+        return {"computed": False, "flight_id": flight_id, "strategy": strategy}
 
     try:
         import modis_aod_utils
@@ -1189,14 +1171,13 @@ def flight_aod_agreement(flight_id: str, strategy: str = flight_backtrack.STRATE
         return {"computed": True, "configured": True, "flight_id": flight_id, "error": str(e)}
 
     return {
-        "computed": True, "configured": True, "flight_id": flight_id, "strategy": strategy, "method": method,
+        "computed": True, "configured": True, "flight_id": flight_id, "strategy": strategy,
         "date": date_str, **agreement,
     }
 
 
 @app.get("/api/flight/{flight_id}/seviri_scene")
-def flight_seviri_scene(flight_id: str, strategy: str = flight_backtrack.STRATEGY_TOPN,
-                         method: str = flight_backtrack.METHOD_HYSPLIT):
+def flight_seviri_scene(flight_id: str, strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
     Looks up the nearest real SEVIRI full-disk scene (EUMETSAT Data Store)
     to this flight's single highest-dust HYSPLIT release point, as a link
@@ -1224,7 +1205,7 @@ def flight_seviri_scene(flight_id: str, strategy: str = flight_backtrack.STRATEG
                      "EUMETSAT_CONSUMER_SECRET before starting the dashboard.",
         }
 
-    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method))
+    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy))
     density_path = flight_dir / "density_grid.json"
     if density_path.exists():
         release_points = json.loads(density_path.read_text())["release_points"]
@@ -1293,7 +1274,7 @@ def _log_progress(log_path):
 
 @app.post("/api/flight/{flight_id}/compute")
 def start_compute(flight_id: str, job: str, hours: int | None = None, points: int | None = None,
-                   strategy: str = flight_backtrack.STRATEGY_TOPN, method: str = flight_backtrack.METHOD_HYSPLIT):
+                   strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
     Launches flight_backtrack.py for flight_id in the background, so the
     dashboard doesn't require a terminal on the HYSPLIT machine for the
@@ -1307,18 +1288,12 @@ def start_compute(flight_id: str, job: str, hours: int | None = None, points: in
     script defaults to its own RUNTIME_HOURS/N_RELEASE_POINTS constants when
     omitted. `strategy` (topn/trigger/dense) picks the release-point
     selection strategy -- see flight_backtrack.select_release_points().
-    `method` (hysplit/surrogate) picks how each point is traced -- surrogate
-    is near-instant and needs no HYSPLIT install, but is an approximation
-    (see surrogate_backtrack.py); the frontend should only offer it once
-    /api/surrogate_status confirms a trained model exists.
     """
     global CURRENT_JOB
     if job not in COMPUTE_JOBS:
         raise HTTPException(400, f"unknown job {job!r}, expected one of {list(COMPUTE_JOBS)}")
     if strategy not in flight_backtrack.STRATEGIES:
         raise HTTPException(400, f"unknown strategy {strategy!r}, expected one of {flight_backtrack.STRATEGIES}")
-    if method not in flight_backtrack.METHODS:
-        raise HTTPException(400, f"unknown method {method!r}, expected one of {flight_backtrack.METHODS}")
 
     if CURRENT_JOB is not None and CURRENT_JOB["process"].poll() is None:
         return {
@@ -1326,10 +1301,10 @@ def start_compute(flight_id: str, job: str, hours: int | None = None, points: in
             "running": {"flight_id": CURRENT_JOB["flight_id"], "job": CURRENT_JOB["job"]},
         }
 
-    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method))
+    flight_dir = Path(flight_backtrack.flight_dir_for(flight_id, strategy))
     flight_dir.mkdir(parents=True, exist_ok=True)
     log_path = flight_dir / f"{job}_compute.log"
-    cmd = [sys.executable, "-u", COMPUTE_JOBS[job], flight_id, "--strategy", strategy, "--method", method]
+    cmd = [sys.executable, "-u", COMPUTE_JOBS[job], flight_id, "--strategy", strategy]
     if hours is not None:
         cmd += ["--hours", str(hours)]
     if points is not None:
@@ -1375,193 +1350,6 @@ def compute_status():
     return result
 
 
-@app.get("/api/surrogate_status")
-def surrogate_status():
-    """
-    Lets the frontend decide whether to offer the surrogate method at all --
-    checked via a cheap file-existence test (surrogate_backtrack.available()),
-    not by importing scikit-learn/joblib, so this responds instantly even on
-    a machine that doesn't have those installed (the surrogate option just
-    stays hidden/disabled there, same degrade-gracefully contract as the
-    MERRA-2/EUMETSAT panels).
-    """
-    if not surrogate_backtrack.available():
-        return {"available": False}
-    return {"available": True, **(surrogate_backtrack.model_info() or {})}
-
-
-# hysplit_results/ lives under OneDrive, whose file provider has been
-# A small, rarely-appended log the dust-source-attribution tab's own
-# "compute for overlay" flow writes to -- one row per flight+strategy the
-# user has actually looked at both methods for. /api/surrogate/performance
-# reads THIS instead of scanning every flight folder under hysplit_results/:
-# that folder can hold thousands of flights, lives under OneDrive, and a
-# bulk directory sweep there was observed to stall badly (same underlying
-# issue run_all_flights.py's append_log() retries around) -- a log built up
-# by real user actions is fast to read and never needs that sweep at all,
-# at the cost of only covering flights someone actually compared.
-COMPARISON_LOG_PATH = DUST_FILES_DIR / "hysplit_results" / "surrogate_comparisons.csv"
-COMPARISON_LOG_FIELDS = [
-    "flight_id", "strategy", "jaccard_pct", "pct_hysplit_in_surrogate",
-    "pct_surrogate_in_hysplit", "n_hysplit_cells", "n_surrogate_cells", "percentile", "logged_utc",
-]
-
-
-def _regrid_nearest(src_lon, src_lat, src_grid, dst_lon, dst_lat):
-    lon_idx = np.abs(np.subtract.outer(dst_lon, src_lon)).argmin(axis=1)
-    lat_idx = np.abs(np.subtract.outer(dst_lat, src_lat)).argmin(axis=1)
-    return src_grid[np.ix_(lat_idx, lon_idx)]
-
-
-def _surrogate_hysplit_overlap(hysplit, surrogate, percentile=75):
-    """
-    Same convention as modis_aod_utils.compute_agreement() (already used
-    for the AOD agreement stat): percentile-threshold each grid at ITS OWN
-    native resolution/extent -- a fixed absolute cutoff doesn't make sense
-    here since the two methods' concentration values aren't on the same
-    scale -- regrid the surrogate mask onto HYSPLIT's native lon/lat via
-    nearest-neighbor, and report Jaccard overlap between the two
-    thresholded "high density" regions, plus the two directional
-    percentages (a single combined number can hide a lopsided result, e.g.
-    the surrogate's high-density region being a strict subset of a much
-    larger HYSPLIT one). Chosen over centroid distance because collapsing
-    each full density field to one point misses shape/multimodality
-    entirely -- two methods can share a centroid while looking nothing
-    alike, or differ in centroid while substantially overlapping.
-    """
-    h_lon, h_lat = np.asarray(hysplit["lon"], dtype=float), np.asarray(hysplit["lat"], dtype=float)
-    h_grid = np.asarray(hysplit["density"], dtype=float)
-    s_lon, s_lat = np.asarray(surrogate["lon"], dtype=float), np.asarray(surrogate["lat"], dtype=float)
-    s_grid = np.asarray(surrogate["density"], dtype=float)
-
-    hysplit_mask = h_grid >= np.percentile(h_grid, percentile)
-    surrogate_mask_native = s_grid >= np.percentile(s_grid, percentile)
-    surrogate_mask = _regrid_nearest(s_lon, s_lat, surrogate_mask_native, h_lon, h_lat)
-
-    # Cells in HYSPLIT's grid that fall outside the surrogate grid's own
-    # covered extent aren't a real "surrogate says no" -- nearest-neighbor
-    # would otherwise silently extrapolate the nearest edge cell's mask
-    # value arbitrarily far outside where the surrogate ever evaluated.
-    grid_lon, grid_lat = np.meshgrid(h_lon, h_lat)
-    valid = (
-        (grid_lon >= s_lon.min()) & (grid_lon <= s_lon.max())
-        & (grid_lat >= s_lat.min()) & (grid_lat <= s_lat.max())
-    )
-    hysplit_mask &= valid
-    surrogate_mask &= valid
-
-    intersection = int(np.sum(hysplit_mask & surrogate_mask))
-    union = int(np.sum(hysplit_mask | surrogate_mask))
-    n_hysplit = int(np.sum(hysplit_mask))
-    n_surrogate = int(np.sum(surrogate_mask))
-    return {
-        "jaccard_pct": (100 * intersection / union) if union else None,
-        "pct_hysplit_in_surrogate": (100 * intersection / n_hysplit) if n_hysplit else None,
-        "pct_surrogate_in_hysplit": (100 * intersection / n_surrogate) if n_surrogate else None,
-        "n_hysplit_cells": n_hysplit,
-        "n_surrogate_cells": n_surrogate,
-        "percentile": percentile,
-    }
-
-
-class ComparisonLogEntry(BaseModel):
-    flight_id: str
-    strategy: str = flight_backtrack.STRATEGY_TOPN
-
-
-@app.post("/api/surrogate/log_comparison")
-def log_surrogate_comparison(entry: ComparisonLogEntry):
-    """
-    Records one "both methods were loaded side by side for this flight"
-    event -- called by the frontend once the dust-source-attribution tab's
-    overlay toggle has both a real HYSPLIT and a surrogate density grid
-    computed for the same flight+strategy. Loads both density_grid.json
-    files itself (single-flight reads, already synced by this point --
-    not the bulk-directory-scan pattern that stalls under OneDrive) and
-    computes overlap here rather than trusting client-submitted numbers.
-    Append-only, like every other progress log in this codebase (e.g.
-    run_all_flights.py's batch_compute_log.csv) -- a rerun/revisit just
-    adds another row, and /api/surrogate/performance below keeps only the
-    latest per flight.
-    """
-    hysplit = _load_density_grid(entry.flight_id, entry.strategy, flight_backtrack.METHOD_HYSPLIT)
-    surrogate = _load_density_grid(entry.flight_id, entry.strategy, flight_backtrack.METHOD_SURROGATE)
-    if not hysplit or not surrogate:
-        raise HTTPException(400, "both a real HYSPLIT and a surrogate result must be computed for this flight+strategy first")
-    overlap = _surrogate_hysplit_overlap(hysplit, surrogate)
-
-    write_header = not COMPARISON_LOG_PATH.exists()
-    COMPARISON_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    row = {
-        "flight_id": entry.flight_id, "strategy": entry.strategy,
-        **overlap, "logged_utc": datetime.now(timezone.utc).isoformat(),
-    }
-    with open(COMPARISON_LOG_PATH, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=COMPARISON_LOG_FIELDS, extrasaction="ignore")
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
-    return {"status": "logged", **overlap}
-
-
-def _load_density_grid(flight_id, strategy, method):
-    path = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method)) / "density_grid.json"
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
-
-
-@app.get("/api/surrogate/performance")
-def surrogate_performance(strategy: str = flight_backtrack.STRATEGY_TOPN):
-    """
-    Reports, for every flight logged via log_surrogate_comparison() above
-    under this strategy, how much the two methods' high-density source
-    regions overlap -- a spot-check of surrogate accuracy against real
-    physics, independent of the training-time CV metrics (which only
-    measure fit to the training rows themselves, in log-concentration
-    space, not "does the resulting source region actually agree").
-    """
-    pairs_by_flight = {}
-    if COMPARISON_LOG_PATH.exists():
-        with open(COMPARISON_LOG_PATH, newline="") as f:
-            for row in csv.DictReader(f):
-                if row.get("strategy") != strategy:
-                    continue
-                pairs_by_flight[row["flight_id"]] = row  # last row wins -- keeps only the latest per flight
-    pairs = [
-        {
-            "flight_id": row["flight_id"],
-            "jaccard_pct": float(row["jaccard_pct"]) if row.get("jaccard_pct") else None,
-            "pct_hysplit_in_surrogate": float(row["pct_hysplit_in_surrogate"]) if row.get("pct_hysplit_in_surrogate") else None,
-            "pct_surrogate_in_hysplit": float(row["pct_surrogate_in_hysplit"]) if row.get("pct_surrogate_in_hysplit") else None,
-            "logged_utc": row.get("logged_utc"),
-        }
-        for row in pairs_by_flight.values()
-    ]
-    jaccards = [p["jaccard_pct"] for p in pairs if p["jaccard_pct"] is not None]
-    hysplit_in_surrogate = [p["pct_hysplit_in_surrogate"] for p in pairs if p["pct_hysplit_in_surrogate"] is not None]
-    surrogate_in_hysplit = [p["pct_surrogate_in_hysplit"] for p in pairs if p["pct_surrogate_in_hysplit"] is not None]
-    return {
-        "strategy": strategy,
-        "model": surrogate_backtrack.model_info(),
-        "n_pairs": len(pairs),
-        "mean_jaccard_pct": float(np.mean(jaccards)) if jaccards else None,
-        "median_jaccard_pct": float(np.median(jaccards)) if jaccards else None,
-        # Jaccard (intersection/union) is the headline agreement number, but
-        # it conflates two different kinds of miss: HYSPLIT area the
-        # surrogate didn't cover (a false negative, missed source region)
-        # versus surrogate area HYSPLIT didn't have (a false positive,
-        # over-wide guess). These two directional percentages separate
-        # that out, in case one direction is driving a low Jaccard score
-        # more than the other.
-        "mean_pct_hysplit_in_surrogate": float(np.mean(hysplit_in_surrogate)) if hysplit_in_surrogate else None,
-        "median_pct_hysplit_in_surrogate": float(np.median(hysplit_in_surrogate)) if hysplit_in_surrogate else None,
-        "mean_pct_surrogate_in_hysplit": float(np.mean(surrogate_in_hysplit)) if surrogate_in_hysplit else None,
-        "median_pct_surrogate_in_hysplit": float(np.median(surrogate_in_hysplit)) if surrogate_in_hysplit else None,
-        "pairs": sorted(pairs, key=lambda p: -(p["jaccard_pct"] or 0)),
-    }
-
-
 SUSCEPTIBILITY_AGREEMENT_PATH = DUST_SOURCE_DIR.parent / "susceptibility_agreement.csv"
 
 
@@ -1591,33 +1379,6 @@ def susceptibility_agreement():
         "median_agreement_pct": float(np.median(pcts)) if pcts else None,
         "flights": sorted(rows, key=lambda r: -r["agreement_pct"]),
     }
-
-
-@app.post("/api/surrogate/retrain")
-def surrogate_retrain():
-    """
-    Launches `python surrogate_model.py` (retrains from scratch on every
-    combined_raw.csv currently on disk) in the background, sharing the same
-    single system-wide job slot as per-flight HYSPLIT/surrogate computes --
-    both are heavy, CPU-bound jobs, so running one of each concurrently on
-    one machine is never desirable. Frontend polls the same
-    /api/compute_status this shares with per-flight jobs; "flight_id" is
-    just null here since this isn't tied to one flight.
-    """
-    global CURRENT_JOB
-    if CURRENT_JOB is not None and CURRENT_JOB["process"].poll() is None:
-        return {
-            "status": "busy",
-            "running": {"flight_id": CURRENT_JOB["flight_id"], "job": CURRENT_JOB["job"]},
-        }
-
-    log_path = DUST_FILES_DIR / "hysplit_results" / "surrogate_retrain.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-u", "surrogate_model.py"]
-    with open(log_path, "w") as log_file:
-        process = subprocess.Popen(cmd, cwd=DUST_FILES_DIR, stdout=log_file, stderr=subprocess.STDOUT)
-    CURRENT_JOB = {"flight_id": None, "job": "retrain", "process": process, "log_path": log_path, "started": time.time()}
-    return {"status": "started"}
 
 
 @app.get("/api/dust_susceptibility")
@@ -1691,9 +1452,9 @@ def anomalous_flights():
 @app.get("/api/batch_compute_progress")
 def batch_compute_progress(strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
-    How much of CSVFiles has a real HYSPLIT result yet, for judging
-    training-data coverage and watching a run_all_flights.py batch progress
-    without tailing a log file by hand. Two independent parts:
+    How much of CSVFiles has a real HYSPLIT result yet, for watching a
+    run_all_flights.py batch progress without tailing a log file by hand.
+    Two independent parts:
 
       - coverage: every flight_id in CSVFiles (same listing
         run_all_flights.py itself uses), checked against the same
@@ -1712,7 +1473,7 @@ def batch_compute_progress(strategy: str = flight_backtrack.STRATEGY_TOPN):
     total = len(flight_ids)
     done = sum(
         1 for fid in flight_ids
-        if run_all_flights.already_computed(fid, strategy, flight_backtrack.METHOD_HYSPLIT)
+        if run_all_flights.already_computed(fid, strategy)
     )
 
     log_path = run_all_flights.LOG_PATH

@@ -26,15 +26,9 @@ are done, postprocess_results.process_index() combines them and
 build_flight_density() turns that into a compact density_grid.json the
 dashboard reads directly (see app.py's /api/flight/{flight_id}/dust_source_density).
 
---strategy (topn/trigger/dense) picks WHICH release points to use; the
-separate --method flag (hysplit/surrogate) picks HOW each one is traced --
-hysplit (default) runs the real hycs_std simulation above, surrogate instead
-evaluates surrogate_backtrack.py's trained-model estimate, near-instant and
-requiring no HYSPLIT install, but an approximation learned only from
-whichever flights already have a real HYSPLIT result -- see that module's
-docstring before trusting it for anything beyond quick exploration. Results
-for a non-default strategy and/or method get their own namespaced subfolder
-(see flight_dir_for()) so they never mix with -- or overwrite -- each other.
+--strategy (topn/trigger/dense) picks WHICH release points to use. Results
+for a non-default strategy get their own namespaced subfolder (see
+flight_dir_for()) so they never mix with -- or overwrite -- each other.
 
 N_RELEASE_POINTS has not been tuned against real run timings yet -- per
 run_matrix.py's own guidance, time a single flight's batch before raising it.
@@ -68,18 +62,6 @@ STRATEGY_TRIGGER = "trigger"
 STRATEGY_DENSE = "dense"
 STRATEGIES = (STRATEGY_TOPN, STRATEGY_TRIGGER, STRATEGY_DENSE)
 
-# Orthogonal to STRATEGIES above: strategy picks WHICH release points to use,
-# method picks HOW each one is traced. METHOD_SURROGATE swaps out the real
-# hycs_std run (backtrack.run_backtrack_gif) for surrogate_backtrack.py's
-# trained-model estimate -- see that module's docstring for what it can and
-# can't be trusted for. surrogate_backtrack is imported lazily (only inside
-# run_flight(), when actually needed) so this module -- imported at startup
-# by dashboard/app.py -- stays importable on a machine without scikit-learn/
-# joblib installed.
-METHOD_HYSPLIT = "hysplit"
-METHOD_SURROGATE = "surrogate"
-METHODS = (METHOD_HYSPLIT, METHOD_SURROGATE)
-
 DENSE_BUCKET_SECONDS = 60  # ~1 release point per minute of elapsed flight time
 DENSE_MAX_POINTS = 60  # safety cap -- an unusually long flight shouldn't silently balloon into hundreds of HYSPLIT runs
 
@@ -90,7 +72,7 @@ INDEX_FIELDS = [
     "run_label", "status", "flight_id", "point_label", "lat", "lon", "height_m",
     "start_utc", "runtime_hours", "species", "particle_diameter_um", "particle_density",
     "elapsed_min", "alt_ft", "dust_ingested_g", "bin_total_dust_g",
-    "total_periods", "empty_periods", "gif", "raw_csv", "error", "surrogate",
+    "total_periods", "empty_periods", "gif", "raw_csv", "error",
 ]
 
 
@@ -206,37 +188,31 @@ def append_to_index(index_csv, row):
         writer.writerow(row)
 
 
-def flight_dir_for(flight_id, strategy=STRATEGY_TOPN, method=METHOD_HYSPLIT):
+def flight_dir_for(flight_id, strategy=STRATEGY_TOPN):
     """
-    Where this flight+strategy+method's results live. topn+hysplit keeps the
-    original flat layout (FLIGHTS_DIR/<flight_id>/) for backward
-    compatibility with already-computed flights; a non-default strategy
-    and/or method each add their own namespaced subfolder (nested when both
-    are non-default, e.g. <flight_id>/trigger/surrogate/). Without this,
-    every strategy/method would share the same index.csv/combined_raw.csv/
-    density_grid.json -- and since point_label always starts back at pt01
-    for each one, their points would dedup-collide with each other, silently
-    mixing release points (or real vs. surrogate results) into one density
-    map instead of keeping each combination isolated and correctly
-    attributable.
+    Where this flight+strategy's results live. The default topn strategy
+    uses the flat layout (FLIGHTS_DIR/<flight_id>/); any other strategy gets
+    its own subfolder (e.g. <flight_id>/trigger/). Without this, every
+    strategy would share the same index.csv/combined_raw.csv/density_grid.json
+    -- and since point_label always starts back at pt01 for each one, their
+    points would dedup-collide with each other, silently mixing release
+    points from different strategies into one density map.
     """
     base = os.path.join(FLIGHTS_DIR, flight_id)
     if strategy != STRATEGY_TOPN:
         base = os.path.join(base, strategy)
-    if method != METHOD_HYSPLIT:
-        base = os.path.join(base, method)
     return base
 
 
-def build_flight_density(flight_id, strategy=STRATEGY_TOPN, method=METHOD_HYSPLIT):
+def build_flight_density(flight_id, strategy=STRATEGY_TOPN):
     """
-    Combines this flight's HYSPLIT (or surrogate) runs into a density grid,
+    Combines this flight's HYSPLIT runs into a density grid,
     weighted by concentration * bin_total_dust_g -- so a release point that
     genuinely ingested more dust counts for more in the aggregate picture,
     not just every point counting equally. Writes density_grid.json next to
     combined_raw.csv, read directly by the dashboard's FastAPI endpoint.
     """
-    flight_dir = flight_dir_for(flight_id, strategy, method)
+    flight_dir = flight_dir_for(flight_id, strategy)
     combined_path = os.path.join(flight_dir, "combined_raw.csv")
     if not os.path.exists(combined_path):
         print(f"{flight_id}: no combined_raw.csv -- no successful runs to build a density map from")
@@ -284,20 +260,13 @@ def build_flight_density(flight_id, strategy=STRATEGY_TOPN, method=METHOD_HYSPLI
         "lat": grid_lat[:, 0].tolist(),
         "density": density.tolist(),
         "release_points": release_points,
-        # Belt-and-suspenders alongside the folder namespacing above -- lets
-        # a consumer that only has this one JSON file in hand (e.g. an
-        # export, or a future direct file read) still tell it apart from a
-        # real HYSPLIT result without needing to know which endpoint/method
-        # query param it was fetched with.
-        "surrogate": method == METHOD_SURROGATE,
     }
     with open(os.path.join(flight_dir, "density_grid.json"), "w") as f:
         json.dump(out, f)
     print(f"{flight_id}: wrote density_grid.json ({len(ok)} release points)")
 
 
-def run_flight(flight_id, runtime_hours=RUNTIME_HOURS, n_points=N_RELEASE_POINTS, strategy=STRATEGY_TOPN,
-               method=METHOD_HYSPLIT):
+def run_flight(flight_id, runtime_hours=RUNTIME_HOURS, n_points=N_RELEASE_POINTS, strategy=STRATEGY_TOPN):
     """
     Returns (any_ok, last_error): any_ok is False if the flight had no
     usable rows or every release point failed. Each point's own exception
@@ -307,35 +276,17 @@ def run_flight(flight_id, runtime_hours=RUNTIME_HOURS, n_points=N_RELEASE_POINTS
     this return value to report a real failure via a non-zero exit code
     instead, since the dashboard's /api/flight/{id}/compute can only tell
     success from failure via this process's return code.
-
-    `method` picks the per-point runner: METHOD_HYSPLIT (default) runs real
-    HYSPLIT via backtrack.run_backtrack_gif(); METHOD_SURROGATE evaluates
-    surrogate_backtrack.py's trained model instead -- see its module
-    docstring for what that trades away. surrogate_backtrack is imported
-    here, not at module level, so this module stays importable without
-    scikit-learn/joblib installed (dashboard/app.py imports it unconditionally
-    at startup for flight_dir_for()/select_release_points()).
     """
-    if method not in METHODS:
-        raise ValueError(f"unknown method {method!r}, expected one of {METHODS}")
-    if method == METHOD_SURROGATE:
-        import surrogate_backtrack
-        runner = surrogate_backtrack.run_backtrack_surrogate
-    else:
-        runner = backtrack.run_backtrack_gif
-
     points = select_release_points(flight_id, n_points=n_points, strategy=strategy)
     if not points:
         print(f"{flight_id}: no usable (phase-filtered) rows, or no {strategy} events -- skipping")
         return False, f"no usable rows or no {strategy} events found"
 
-    flight_dir = flight_dir_for(flight_id, strategy, method)
+    flight_dir = flight_dir_for(flight_id, strategy)
     index_csv = os.path.join(flight_dir, "index.csv")
-    # Keeps the existing (flight_id, strategy, point_label) run_label format
-    # for the default hysplit method unchanged -- already-computed flights'
-    # index.csv/combined_raw.csv rows were written with that exact format, so
-    # a rerun of the same flight+strategy must keep producing matching labels.
-    label_parts = [flight_id, strategy] + ([] if method == METHOD_HYSPLIT else [method])
+    # (flight_id, strategy, point_label) run_label format -- a rerun of the
+    # same flight+strategy must keep producing matching labels.
+    label_parts = [flight_id, strategy]
     any_ok = False
     last_error = None
     for i, pt in enumerate(points, start=1):
@@ -343,7 +294,7 @@ def run_flight(flight_id, runtime_hours=RUNTIME_HOURS, n_points=N_RELEASE_POINTS
         result_dir = os.path.join(flight_dir, pt["point_label"])
         print(f"[{i}/{len(points)}] {run_label}")
         try:
-            meta = runner(
+            meta = backtrack.run_backtrack_gif(
                 lat=pt["lat"], lon=pt["lon"], height_m=pt["alt_ft"] * 0.3048,
                 start=pt["start"], runtime_hours=runtime_hours, result_dir=result_dir,
                 extra_meta={
@@ -364,7 +315,7 @@ def run_flight(flight_id, runtime_hours=RUNTIME_HOURS, n_points=N_RELEASE_POINTS
         append_to_index(index_csv, meta)  # written after every run, so a crash mid-batch loses nothing
 
     postprocess_results.process_index(index_csv)
-    build_flight_density(flight_id, strategy=strategy, method=method)
+    build_flight_density(flight_id, strategy=strategy)
     return any_ok, last_error
 
 
@@ -378,10 +329,6 @@ def main():
                               "(default: script's N_RELEASE_POINTS)")
     parser.add_argument("--strategy", choices=STRATEGIES, default=STRATEGY_TOPN,
                          help="release-point selection strategy (default: topn)")
-    parser.add_argument("--method", choices=METHODS, default=METHOD_HYSPLIT,
-                         help="hysplit runs the real hycs_std simulation (default); surrogate evaluates "
-                              "the trained model from surrogate_model.py instead -- fast, but an "
-                              "approximation, see surrogate_backtrack.py's docstring")
     args = parser.parse_args()
 
     runtime_hours = -abs(args.hours) if args.hours is not None else RUNTIME_HOURS
@@ -391,7 +338,7 @@ def main():
     for flight_id in args.flight_ids:
         print(f"=== {flight_id} ===")
         ok, last_error = run_flight(flight_id, runtime_hours=runtime_hours, n_points=n_points,
-                                     strategy=args.strategy, method=args.method)
+                                     strategy=args.strategy)
         if not ok:
             failures[flight_id] = last_error or "unknown failure"
     if failures:

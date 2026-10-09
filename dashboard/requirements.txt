@@ -9,16 +9,6 @@ matplotlib
 rasterio
 requests
 python-dotenv
-# Needed to TRAIN or RUN the HYSPLIT surrogate model (hysplit_tools/
-# surrogate_model.py / surrogate_backtrack.py, "surrogate" method on the dust
-# source attribution tab). The dashboard itself starts fine without these --
-# /api/surrogate_status just reports the surrogate option unavailable, and
-# the compute button for it stays disabled -- since flight_backtrack.py runs
-# as a subprocess of this same Python (see app.py's start_compute), whichever
-# environment runs `uvicorn app:app` needs these installed for --method
-# surrogate to actually work.
-scikit-learn
-joblib
 # Optional: only needed for the MERRA-2 validation/wind-vector panels
 # (dust source attribution tab). The dashboard runs fine without them --
 # those panels just show "not configured" instead.

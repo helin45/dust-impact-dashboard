@@ -156,7 +156,7 @@ Set `DUST_CSV_DIR` to read the CSVs from somewhere other than `CSVFiles/`. Re-ru
 
 | | |
 |---|---|
-| **HYSPLIT** | NOAA ARL's dispersion model. Separate manual install, free registration at <https://www.ready.noaa.gov/HYSPLIT.php>. This repo only *runs* an existing install; it never bundles or downloads HYSPLIT itself. Needed only for the "Dust source attribution" tab's **HYSPLIT** method. |
+| **HYSPLIT** | NOAA ARL's dispersion model. Separate manual install, free registration at <https://www.ready.noaa.gov/HYSPLIT.php>. This repo only *runs* an existing install; it never bundles or downloads HYSPLIT itself. Needed only for the "Dust source attribution" tab. |
 | **Ghostscript** | only if you want the PNG/GIF plots HYSPLIT's `concplot` produces; `brew install ghostscript` on macOS. |
 | **NASA Earthdata login** | free, <https://urs.earthdata.nasa.gov/users/new>; for the MERRA-2 wind-vector and validation panels. |
 | **EUMETSAT API key** | free, <https://api.eumetsat.int/api-key/>; for the SEVIRI dust-imagery lookup. |
@@ -189,11 +189,6 @@ under `hysplit_tools/hysplit_results/` (git-ignored).
 
 To compute HYSPLIT results for many flights in one unattended batch, see the
 docstring of `hysplit_tools/run_all_flights.py`.
-
-The **Surrogate model** method on the dust source attribution tab is a trained
-approximation of HYSPLIT and needs no HYSPLIT install; but it can only learn
-from flights that already have real HYSPLIT results, so it's for quick
-exploration only. See the docstring in `hysplit_tools/surrogate_backtrack.py`.
 
 ## API credentials (optional)
 

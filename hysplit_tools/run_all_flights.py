@@ -1,15 +1,6 @@
 """
 Batch-computes real HYSPLIT dust-source density for as many flights in
-CSVFiles/ (repo root) as possible, to build up training data for the
-surrogate model (surrogate_model.py) -- that model can only learn from
-flights that have gone through this real pipeline, so more flights computed
-here directly means more (and more representative) training data.
-
-Always uses method="hysplit" (never "surrogate") -- this script's entire
-purpose is generating the REAL data the surrogate model learns from; feeding
-it the surrogate's own guesses would let the model drift further from
-reality with each generation (surrogate_model.py already refuses to train on
-anything under a "surrogate" folder, as a second line of defense).
+CSVFiles/ (repo root) as possible.
 
 Skips any flight that already has a density_grid.json for the requested
 strategy -- interrupting and re-running this script is the expected way to
@@ -68,8 +59,8 @@ def list_flight_ids():
     return sorted(p.stem for p in CSV_DIR.glob("*.csv") if not p.name.endswith("_Summary.csv"))
 
 
-def already_computed(flight_id, strategy, method):
-    path = Path(flight_backtrack.flight_dir_for(flight_id, strategy, method)) / "density_grid.json"
+def already_computed(flight_id, strategy):
+    path = Path(flight_backtrack.flight_dir_for(flight_id, strategy)) / "density_grid.json"
     return path.exists()
 
 
@@ -104,8 +95,7 @@ def main():
     parser.add_argument("--points", type=int, default=None,
                          help="release points per flight, topn/dense only (default: flight_backtrack's N_RELEASE_POINTS)")
     parser.add_argument("--strategy", choices=flight_backtrack.STRATEGIES, default=flight_backtrack.STRATEGY_TOPN,
-                         help="release-point selection strategy (default: topn -- keeps new training data "
-                              "consistent with the existing 38-flight topn training set)")
+                         help="release-point selection strategy (default: topn)")
     parser.add_argument("--limit", type=int, default=None,
                          help="stop after this many NEWLY computed flights this run (default: no limit -- "
                               "attempt every not-yet-computed flight)")
@@ -128,7 +118,7 @@ def main():
     if args.shuffle:
         random.Random(args.seed).shuffle(flight_ids)
 
-    todo = [fid for fid in flight_ids if not already_computed(fid, args.strategy, flight_backtrack.METHOD_HYSPLIT)]
+    todo = [fid for fid in flight_ids if not already_computed(fid, args.strategy)]
     already_done = len(flight_ids) - len(todo)
     print(f"{len(flight_ids)} flight CSVs in {CSV_DIR}")
     print(f"{already_done} already computed for {args.strategy}/hysplit, {len(todo)} remaining")
@@ -153,7 +143,7 @@ def main():
         try:
             ok, last_error = flight_backtrack.run_flight(
                 flight_id, runtime_hours=runtime_hours, n_points=n_points,
-                strategy=args.strategy, method=flight_backtrack.METHOD_HYSPLIT,
+                strategy=args.strategy,
             )
             status, error = ("ok", None) if ok else ("no_usable_points", last_error)
         except Exception as e:
@@ -177,7 +167,6 @@ def main():
           f"({n_attempted} attempted, {len(todo) - n_attempted} left for next run)")
     print(f"{already_done + n_ok} flight(s) now computed in total for {args.strategy}/hysplit")
     print(f"log: {LOG_PATH}")
-    print("Once you have as many flights computed as you want, re-run surrogate_model.py to retrain on all of them.")
 
 
 if __name__ == "__main__":

@@ -50,7 +50,7 @@ def _load_json_bounded(path, timeout=20.0):
 # Matches the dashboard's own convention (app.js gateDensityBySusceptibility
 # + susceptibilityCorroborationPct, used by the Results tab) -- top 25% of
 # a flight's OWN density distribution counts as "high density", same
-# percentile threshold the AOD/surrogate-overlap agreement stats use.
+# percentile threshold the AOD agreement stats use.
 DENSITY_PERCENTILE = 75
 
 

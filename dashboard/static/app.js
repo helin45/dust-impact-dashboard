@@ -908,7 +908,7 @@ function renderFlightMap(flight) {
 }
 
 // =========================================================================
-// DUST SOURCE TABS (Dust source attribution + Compare methods)
+// DUST SOURCE TAB (Dust source attribution)
 // =========================================================================
 
 // Region-wide, not per-flight -- fetched once and shared by both dust-source

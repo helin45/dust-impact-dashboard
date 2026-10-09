@@ -17,7 +17,7 @@ and, for the optional dust-source-attribution features, your own local
 You need Python 3.12 or newer and a folder of per-flight CSVs.
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/helin45/dust-impact-dashboard.git
 cd dust-impact-dashboard
 # put your flight CSVs in CSVFiles/  (or use --csv-dir, below)
 python run.py

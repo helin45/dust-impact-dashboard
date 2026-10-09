@@ -222,6 +222,39 @@ unknown" rather than guessed wrong. **If your dataset covers a different region,
 extend that dict first** (keep the three copies in sync) or the inference is
 meaningless for your flights.
 
+## Data sources and acknowledgements
+
+This repository contains no data. The optional dust-source features read or
+download the third-party data below at run time. Please follow each provider's
+terms and cite them if you publish results.
+
+- **HYSPLIT and GDAS meteorology**: NOAA Air Resources Laboratory. Stein, A. F.
+  et al. (2015), NOAA's HYSPLIT atmospheric transport and dispersion modeling
+  system, Bull. Amer. Meteor. Soc., 96, 2059-2077. Rolph, G. et al. (2017),
+  Real-time Environmental Applications and Display sYstem: READY,
+  Environmental Modelling & Software, 95, 210-228.
+- **MERRA-2** (winds and dust aerosol optical thickness): NASA Global Modeling
+  and Assimilation Office, obtained through NASA Earthdata. Gelaro, R. et al.
+  (2017), The Modern-Era Retrospective Analysis for Research and Applications,
+  Version 2 (MERRA-2), J. Climate, 30, 5419-5454.
+- **MODIS/Terra aerosol optical depth (MOD08_D3)**: NASA Level-1 and
+  Atmosphere Archive and Distribution System (LAADS DAAC).
+- **ESA WorldCover 2021 (v200)**: land cover, CC BY 4.0. Zanaga, D. et al.
+  (2022), ESA WorldCover 10 m 2021 v200, doi:10.5281/zenodo.7254221.
+  Contains modified Copernicus Sentinel data processed by the ESA WorldCover
+  consortium.
+- **ISRIC SoilGrids** (sand content and WRB soil-class probabilities), CC BY
+  4.0. Poggio, L. et al. (2021), SoilGrids 2.0, SOIL, 7, 217-240,
+  doi:10.5194/soil-7-217-2021.
+- **Natural Earth** country borders: public domain, naturalearthdata.com.
+- **Map background imagery** (VIIRS true colour, ASTER GDEM shaded relief):
+  NASA GIBS. We acknowledge the use of imagery from NASA Worldview
+  (https://worldview.earthdata.nasa.gov), part of NASA's Earth Science Data
+  and Information System (ESDIS).
+- **EUMETSAT Data Store** (SEVIRI scene lookup): EUMETSAT.
+
+Built with FastAPI, DuckDB, pandas, NumPy, SciPy, Matplotlib and Plotly.js.
+
 ## Authorship and license
 
 Written by Helin Taha during a School of Engineering research internship at the

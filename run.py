@@ -16,10 +16,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DASH = ROOT / "dashboard"
-DEMO_DIR = ROOT / ".demo"
+DATA = DASH / "data"
 VENV = ROOT / ".venv"
 REQ = DASH / "requirements.txt"
 REQ_STAMP = VENV / ".requirements.sha256"
+BUILD_STAMP = DATA / ".build_stamp.json"
 MIN_PY = (3, 12)
 CORE_PACKAGES = {"fastapi", "uvicorn", "duckdb", "pandas", "numpy", "pyarrow",
                  "scipy", "matplotlib", "requests", "python-dotenv"}
@@ -89,12 +90,7 @@ def preflight():
             "libraries: wait a minute and run again, or ask IT to allow this folder.")
 
 
-def count_flights(csv_dir):
-    return sum(1 for p in csv_dir.glob("*.csv") if not p.name.endswith("_Summary.csv"))
-
-
 def resolve_csv_dir(arg):
-    """Returns (csv_dir, n_flights), or (None, 0) when the default CSVFiles/ folder has no data yet."""
     default = ROOT / "CSVFiles"
     chosen = arg or os.environ.get("DUST_CSV_DIR")
     csv_dir = Path(chosen).expanduser().resolve() if chosen else default
@@ -102,48 +98,20 @@ def resolve_csv_dir(arg):
         if chosen:
             die(f"CSV folder not found: {csv_dir}")
         csv_dir.mkdir()
-    n = count_flights(csv_dir)
+        die(f"no flight data yet. Put your per-flight CSVs in:\n  {csv_dir}\n"
+            "(or run: python run.py --csv-dir <folder>). Expected CSV format: see README.md.")
+    n = sum(1 for p in csv_dir.glob("*.csv") if not p.name.endswith("_Summary.csv"))
     if n == 0:
-        if chosen:
-            die(f"no flight CSVs found in {csv_dir}. Expected CSV format: see README.md.")
-        return None, 0
+        die(f"no flight CSVs found in {csv_dir}. Expected CSV format: see README.md.")
     return csv_dir, n
 
 
-def offer_demo():
-    """No data in the default folder: offer the demo at a terminal, otherwise explain and stop."""
-    msg = (f"no flight data yet. Put your per-flight CSVs in {ROOT / 'CSVFiles'} "
-           "(or use --csv-dir <folder>); the expected format is in README.md.")
-    if not sys.stdin.isatty():
-        die(msg + " To try the dashboard without data, run: python run.py --demo")
-    print(f"\n[run] {msg}", flush=True)
-    try:
-        answer = input("[run] Run the demo with built-in synthetic flights instead? [Y/n] ").strip().lower()
-    except EOFError:
-        answer = "n"
-    if answer not in ("", "y", "yes"):
-        die("nothing to run. Add your CSVs, or start the demo any time with: python run.py --demo")
-
-
-def prepare_demo(force):
-    sys.path.insert(0, str(DASH))
-    import demo_data
-    csv_dir = DEMO_DIR / "csv"
-    existing = list(csv_dir.glob("*.csv")) if csv_dir.is_dir() else []
-    if force or not existing:
-        for p in existing:
-            p.unlink()
-        n = demo_data.generate(csv_dir)
-        say(f"generated {n} synthetic demo flights in {csv_dir}")
-    return csv_dir, count_flights(csv_dir)
-
-
-def dataset_stale(data_dir, csv_dir, n_csv):
-    ts, fl, stamp_file = data_dir / "timesteps.parquet", data_dir / "flights.parquet", data_dir / ".build_stamp.json"
-    if not (ts.exists() and fl.exists() and stamp_file.exists()):
+def dataset_stale(csv_dir, n_csv):
+    ts, fl = DATA / "timesteps.parquet", DATA / "flights.parquet"
+    if not (ts.exists() and fl.exists() and BUILD_STAMP.exists()):
         return True
     try:
-        stamp = json.loads(stamp_file.read_text())
+        stamp = json.loads(BUILD_STAMP.read_text())
     except ValueError:
         return True
     if stamp.get("csv_dir") != str(csv_dir) or stamp.get("n_csv") != n_csv:
@@ -153,15 +121,15 @@ def dataset_stale(data_dir, csv_dir, n_csv):
     return newest > built
 
 
-def ensure_dataset(data_dir, csv_dir, n_csv, env, force):
-    if not force and not dataset_stale(data_dir, csv_dir, n_csv):
+def ensure_dataset(csv_dir, n_csv, env, force):
+    if not force and not dataset_stale(csv_dir, n_csv):
         say("dataset is up to date")
         return
     say(f"building dataset from {n_csv:,} flight CSVs (this can take a while for large folders)")
     if subprocess.call([str(venv_python()), "build_dataset.py"], cwd=DASH, env=env) != 0:
         die("build_dataset.py failed (see the messages above).")
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / ".build_stamp.json").write_text(json.dumps({"csv_dir": str(csv_dir), "n_csv": n_csv}))
+    DATA.mkdir(exist_ok=True)
+    BUILD_STAMP.write_text(json.dumps({"csv_dir": str(csv_dir), "n_csv": n_csv}))
 
 
 def port_in_use(host, port):
@@ -185,42 +153,24 @@ def open_browser_when_ready(proc, host, port):
 def main():
     ap = argparse.ArgumentParser(description="Install, build and launch the Dust Impact Dashboard.")
     ap.add_argument("--csv-dir", help="folder of per-flight CSVs (default: CSVFiles/ next to this script, or $DUST_CSV_DIR)")
-    ap.add_argument("--demo", action="store_true", help="run on built-in synthetic flights (no CSVs needed)")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true", help="do not open a browser tab")
-    ap.add_argument("--rebuild", action="store_true", help="force rebuilding the dataset (and regenerating demo flights)")
+    ap.add_argument("--rebuild", action="store_true", help="force rebuilding the dataset from the CSVs")
     ap.add_argument("--reinstall", action="store_true", help="force reinstalling the requirements")
     args = ap.parse_args()
 
     if sys.version_info < MIN_PY:
         die(f"Python {MIN_PY[0]}.{MIN_PY[1]} or newer is required (this is {sys.version.split()[0]}).")
-    if args.demo and args.csv_dir:
-        die("--demo and --csv-dir cannot be used together.")
-    use_demo = args.demo
-    if not use_demo:
-        csv_dir, n_csv = resolve_csv_dir(args.csv_dir)
-        if csv_dir is None:
-            offer_demo()
-            use_demo = True
-    if use_demo:
-        csv_dir, n_csv = prepare_demo(args.rebuild)
-        data_dir = DEMO_DIR / "data"
-        say("DEMO MODE: every flight is synthetic (randomly generated), not real data")
-    else:
-        data_dir = DASH / "data"
+    csv_dir, n_csv = resolve_csv_dir(args.csv_dir)
     if port_in_use(args.host, args.port):
         die(f"port {args.port} is already in use (is the dashboard already running?). Try --port {args.port + 1}.")
 
     ensure_venv()
     if ensure_requirements(args.reinstall):
         preflight()
-    env = {**os.environ, "DUST_CSV_DIR": str(csv_dir), "DUST_DATA_DIR": str(data_dir), "PYTHONUNBUFFERED": "1"}
-    if use_demo:
-        env["DUST_DEMO"] = "1"
-    else:
-        env.pop("DUST_DEMO", None)
-    ensure_dataset(data_dir, csv_dir, n_csv, env, args.rebuild)
+    env = {**os.environ, "DUST_CSV_DIR": str(csv_dir), "PYTHONUNBUFFERED": "1"}
+    ensure_dataset(csv_dir, n_csv, env, args.rebuild)
 
     say("starting server (the first page load can take ~30 s while data loads); Ctrl+C to stop")
     cmd = [str(venv_python()), "-m", "uvicorn", "app:app", "--host", args.host, "--port", str(args.port)]

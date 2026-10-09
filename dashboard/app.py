@@ -69,7 +69,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 from dotenv import load_dotenv
 load_dotenv(SCRIPT_DIR / ".env", override=False)
 
-DATA_DIR = Path(os.environ.get("DUST_DATA_DIR") or SCRIPT_DIR / "data").expanduser()  # DUST_DATA_DIR keeps demo data apart from a real dataset
+DATA_DIR = SCRIPT_DIR / "data"
 CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
 TIMESTEPS_PARQUET = DATA_DIR / "timesteps.parquet"
 FLIGHTS_PARQUET = DATA_DIR / "flights.parquet"
@@ -310,7 +310,6 @@ def get_filters():
         "phases": PHASES,
         "n_flights_total": n_flights,
         "registrations": registrations,
-        "demo": os.environ.get("DUST_DEMO") == "1",
     }
 
 

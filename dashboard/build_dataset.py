@@ -57,7 +57,7 @@ def _read_csv_bounded(path, usecols, timeout=90.0, attempts=3):
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
-OUT_DIR = Path(os.environ.get("DUST_DATA_DIR") or SCRIPT_DIR / "data").expanduser()
+OUT_DIR = SCRIPT_DIR / "data"
 
 TIMESTEP_COLS = ["phase", "Flight_Time_Seconds", "Alt_ft", "CoreDustIngested_g"]
 PHASES = {"CLIMB", "CRUISE", "DESCENT", "LEVEL DESCENT", "LEVEL FLIGHT"}

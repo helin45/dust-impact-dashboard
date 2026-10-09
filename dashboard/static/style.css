@@ -110,14 +110,6 @@ body {
   color: var(--text-secondary);
   font-size: 14px;
 }
-.demo-banner {
-  margin: 0 24px 8px;
-  padding: 8px 12px;
-  border-left: 4px solid var(--series-descent);
-  background: var(--surface-1);
-  color: var(--text-primary);
-  font-size: 13px;
-}
 
 .header-actions {
   display: flex;

@@ -3214,13 +3214,6 @@ function setupFlightRankingControls() {
   });
 }
 
-function showDemoBanner() {
-  const banner = document.createElement("div");
-  banner.className = "demo-banner";
-  banner.textContent = "Demo mode: every flight here is synthetic, randomly generated data. Do not read any number as a real result.";
-  document.querySelector(".app-header").after(banner);
-}
-
 async function init() {
   appSettings = loadSettings();
   applySettings();
@@ -3229,7 +3222,6 @@ async function init() {
     fetchJSON("/api/filters"),
     fetchJSON("/api/airports"),
   ]);
-  if (defaults.demo) showDemoBanner();
   applyDefaults();
   initSingleFlightView();
   setupAttributionTab();

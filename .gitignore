@@ -25,7 +25,6 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-.demo/
 
 # --- OS / editor cruft ---
 .DS_Store

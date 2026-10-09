@@ -2673,7 +2673,7 @@ function setupDataQualityView() {
     `).join("");
     renderDataQualityBreakdown(data.flights, data.totals_by_type);
     summary.textContent = data.n_flights === 0
-      ? "No excluded flights -- every flight in CSVFiles made it into the dashboard."
+      ? "No excluded flights -- every flight in DashCSVFiles made it into the dashboard."
       : "";
     const columns = [
       { key: "flight_id", label: "Flight" },
@@ -2737,7 +2737,7 @@ function setupModelPerformanceView() {
     summary.textContent = "Loading…";
     const data = await fetchJSON("/api/batch_compute_progress");
     cards.innerHTML = [
-      { label: "Flights in CSVFiles", value: data.total_flights.toLocaleString() },
+      { label: "Flights in DashCSVFiles", value: data.total_flights.toLocaleString() },
       { label: "Have a real HYSPLIT result", value: data.computed.toLocaleString() },
       { label: "Remaining", value: data.remaining.toLocaleString() },
     ].map(c => `

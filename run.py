@@ -91,7 +91,7 @@ def preflight():
 
 
 def resolve_csv_dir(arg):
-    default = ROOT / "CSVFiles"
+    default = ROOT / "DashCSVFiles"
     chosen = arg or os.environ.get("DUST_CSV_DIR")
     csv_dir = Path(chosen).expanduser().resolve() if chosen else default
     if not csv_dir.is_dir():
@@ -152,7 +152,7 @@ def open_browser_when_ready(proc, host, port):
 
 def main():
     ap = argparse.ArgumentParser(description="Install, build and launch the Dust Impact Dashboard.")
-    ap.add_argument("--csv-dir", help="folder of per-flight CSVs (default: CSVFiles/ next to this script, or $DUST_CSV_DIR)")
+    ap.add_argument("--csv-dir", help="folder of per-flight CSVs (default: DashCSVFiles/ next to this script, or $DUST_CSV_DIR)")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true", help="do not open a browser tab")

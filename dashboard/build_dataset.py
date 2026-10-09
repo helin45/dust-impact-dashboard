@@ -1,7 +1,7 @@
 """
 One-time (re-run as needed) preprocessing script.
 
-Reads every per-flight CSV in ../CSVFiles, keeps only the columns the
+Reads every per-flight CSV in ../DashCSVFiles, keeps only the columns the
 dashboard needs, drops UNKNOWN-phase rows, and writes two compact
 Parquet files into ./data/:
 
@@ -16,7 +16,7 @@ Parquet files into ./data/:
                          no summary file at all (e.g. A321 currently has
                          none, only A333 does).
 
-Re-run this script whenever CSVFiles gains new flights or aircraft types:
+Re-run this script whenever DashCSVFiles gains new flights or aircraft types:
 
     python build_dataset.py
 """
@@ -30,7 +30,7 @@ import time
 
 import pandas as pd
 
-# CSVFiles/ lives under OneDrive, whose file provider has been observed to
+# DashCSVFiles/ lives under OneDrive, whose file provider has been observed to
 # block an individual pd.read_csv() indefinitely (not just slowly -- no
 # exception, no return, for well over an hour in one case) while a large
 # sync backlog drains. A plain try/except+retry only helps once the call
@@ -56,7 +56,7 @@ def _read_csv_bounded(path, usecols, timeout=90.0, attempts=3):
     raise last_exc
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "DashCSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root DashCSVFiles/
 OUT_DIR = SCRIPT_DIR / "data"
 
 TIMESTEP_COLS = ["phase", "Flight_Time_Seconds", "Alt_ft", "CoreDustIngested_g"]

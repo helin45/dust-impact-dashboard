@@ -1,6 +1,6 @@
 """
 Batch-computes real HYSPLIT dust-source density for as many flights in
-CSVFiles/ (repo root) as possible.
+DashCSVFiles/ (repo root) as possible.
 
 Skips any flight that already has a density_grid.json for the requested
 strategy -- interrupting and re-running this script is the expected way to
@@ -9,7 +9,7 @@ downloads, is a long unattended job), so it always picks up where it left
 off instead of redoing already-computed flights. A flight this script can't
 usably process -- missing/unexpected CSV columns, an unexpected filename, no
 rows in a real flight phase -- is logged and skipped, never stops the batch;
-appropriate given the current CSVFiles are known to have data-quality
+appropriate given the current DashCSVFiles are known to have data-quality
 problems (this script is meant to be re-run once cleaner replacement flight
 data is in place, without needing to change anything here).
 
@@ -20,7 +20,7 @@ Run (from the machine with HYSPLIT installed):
     python run_all_flights.py --max-hours 8        # stop starting new flights after 8 wall-clock hours
     python run_all_flights.py --shuffle            # random flight order instead of chronological --
                                                      # gives broader date/route coverage if interrupted
-                                                     # partway through a huge CSVFiles folder
+                                                     # partway through a huge DashCSVFiles folder
     python run_all_flights.py --hours 72 --points 15 --strategy topn
 
 Progress and failures are appended to hysplit_results/batch_compute_log.csv
@@ -40,7 +40,7 @@ import backtrack
 import flight_backtrack
 
 DUST_FILES_DIR = Path(__file__).resolve().parent
-CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or DUST_FILES_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or DUST_FILES_DIR.parent / "DashCSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root DashCSVFiles/
 # Outside OneDrive (like backtrack.WORK_BASE, for the same reason -- see its
 # comment): this log gets appended to once per flight, far more often than
 # any other single file this batch touches, and OneDrive's file provider
@@ -53,7 +53,7 @@ LOG_FIELDS = ["timestamp_utc", "flight_id", "status", "elapsed_s", "strategy", "
 
 def list_flight_ids():
     """
-    Same convention as dashboard/build_dataset.py: every CSVFiles/*.csv
+    Same convention as dashboard/build_dataset.py: every DashCSVFiles/*.csv
     except the per-aircraft-type "<TYPE>_Summary.csv" lookup files.
     """
     return sorted(p.stem for p in CSV_DIR.glob("*.csv") if not p.name.endswith("_Summary.csv"))
@@ -104,7 +104,7 @@ def main():
                               "(the flight already in progress still finishes)")
     parser.add_argument("--shuffle", action="store_true",
                          help="random flight order instead of chronological -- broader date/route coverage "
-                              "if the batch gets interrupted partway through a large CSVFiles folder")
+                              "if the batch gets interrupted partway through a large DashCSVFiles folder")
     parser.add_argument("--seed", type=int, default=0, help="shuffle order seed, for a reproducible order across resumed runs")
     parser.add_argument("--dry-run", action="store_true", help="report how many flights would be computed, then exit")
     args = parser.parse_args()

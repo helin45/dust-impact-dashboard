@@ -70,7 +70,7 @@ from dotenv import load_dotenv
 load_dotenv(SCRIPT_DIR / ".env", override=False)
 
 DATA_DIR = SCRIPT_DIR / "data"
-CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "DashCSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root DashCSVFiles/
 TIMESTEPS_PARQUET = DATA_DIR / "timesteps.parquet"
 FLIGHTS_PARQUET = DATA_DIR / "flights.parquet"
 # Written by build_dataset.py -- every flight excluded from timesteps.parquet
@@ -1452,11 +1452,11 @@ def anomalous_flights():
 @app.get("/api/batch_compute_progress")
 def batch_compute_progress(strategy: str = flight_backtrack.STRATEGY_TOPN):
     """
-    How much of CSVFiles has a real HYSPLIT result yet, for watching a
+    How much of DashCSVFiles has a real HYSPLIT result yet, for watching a
     run_all_flights.py batch progress without tailing a log file by hand.
     Two independent parts:
 
-      - coverage: every flight_id in CSVFiles (same listing
+      - coverage: every flight_id in DashCSVFiles (same listing
         run_all_flights.py itself uses), checked against the same
         density_grid.json existence test that script uses to decide what's
         left to do -- works even if no batch has ever been run on this

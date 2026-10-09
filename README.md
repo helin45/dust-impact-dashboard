@@ -23,7 +23,7 @@ on other systems use `python run.py`.
 ```bash
 git clone https://github.com/helin45/dust-impact-dashboard.git
 cd dust-impact-dashboard
-# put your flight CSVs in CSVFiles/  (or use --csv-dir, below)
+# put your flight CSVs in DashCSVFiles/  (or use --csv-dir, below)
 python run.py
 ```
 
@@ -39,7 +39,7 @@ while the data loads.
 
 | option | what it does |
 |---|---|
-| `--csv-dir <folder>` | read flight CSVs from any folder instead of `CSVFiles/` (also settable with the `DUST_CSV_DIR` environment variable) |
+| `--csv-dir <folder>` | read flight CSVs from any folder instead of `DashCSVFiles/` (also settable with the `DUST_CSV_DIR` environment variable) |
 | `--port <n>` | serve on a different port (default 8000) |
 | `--no-browser` | do not open a browser tab |
 | `--rebuild` | force rebuilding the dataset from the CSVs |
@@ -63,7 +63,7 @@ dust-impact-dashboard/
     .env.example        template for the optional API credentials
   hysplit_tools/      scripts the dashboard shells out to / imports for the
                       HYSPLIT backward-dispersion ("dust source attribution") tab
-  CSVFiles/           <- your flight CSVs go here (git-ignored; run.py creates it if missing)
+  DashCSVFiles/           <- your flight CSVs go here (the folder is in the repo; its contents are git-ignored)
 ```
 
 The dashboard runs fully **without** HYSPLIT or any NASA/EUMETSAT credentials:
@@ -91,7 +91,7 @@ is calculated.
 ## Expected CSV schema
 
 **One CSV per flight**, plus optionally one summary CSV per aircraft type. Put
-them all in `CSVFiles/` (or the folder you pass to `--csv-dir`).
+them all in `DashCSVFiles/` (or the folder you pass to `--csv-dir`).
 
 ### Per-flight file
 
@@ -146,14 +146,14 @@ position (see "Route inference" below).
 python -m venv .venv && source .venv/bin/activate    # optional but recommended
 pip install -r dashboard/requirements.txt
 
-mkdir -p CSVFiles                 # then copy your per-flight CSVs into it
+# copy your per-flight CSVs into DashCSVFiles/
 
 cd dashboard
 python build_dataset.py          # -> data/timesteps.parquet, data/flights.parquet
 uvicorn app:app --reload
 ```
 
-Set `DUST_CSV_DIR` to read the CSVs from somewhere other than `CSVFiles/`. Re-run
+Set `DUST_CSV_DIR` to read the CSVs from somewhere other than `DashCSVFiles/`. Re-run
 `build_dataset.py` whenever your CSVs change.
 
 ## Prerequisites for the optional features

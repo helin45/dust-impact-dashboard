@@ -1,5 +1,6 @@
 # --- data (never commit anyone's flight recordings or derived datasets) ---
-CSVFiles/
+DashCSVFiles/*
+!DashCSVFiles/README.md
 *.csv
 dashboard/data/
 *.parquet

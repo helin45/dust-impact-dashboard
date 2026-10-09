@@ -1,6 +1,6 @@
 """
 Per-flight dust source density: for a given flight_id from the dashboard's
-CSVFiles, samples release points along its actual recorded trajectory and
+DashCSVFiles, samples release points along its actual recorded trajectory and
 backward-traces each with HYSPLIT, to estimate where the dust it encountered
 originated.
 
@@ -49,7 +49,7 @@ import density_utils
 import postprocess_results
 
 DUST_FILES_DIR = Path(__file__).resolve().parent
-CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or DUST_FILES_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
+CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or DUST_FILES_DIR.parent / "DashCSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root DashCSVFiles/
 FLIGHTS_DIR = os.path.join(backtrack.RESULTS_DIR, "flights")
 
 PHASES = ["CLIMB", "CRUISE", "DESCENT", "LEVEL DESCENT"]  # matches dashboard/app.py's PHASES

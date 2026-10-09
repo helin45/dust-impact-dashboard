@@ -16,6 +16,10 @@ and, for the optional dust-source-attribution features, your own local
 
 You need Python 3.12 or newer and a folder of per-flight CSVs.
 
+**Tested on:** Windows 11 with Python 3.12 only. It is written to be cross-platform and
+`run.py` should work on macOS and Linux, but that is untested. `start.bat` is Windows-only;
+on other systems use `python run.py`.
+
 ```bash
 git clone https://github.com/helin45/dust-impact-dashboard.git
 cd dust-impact-dashboard

@@ -1,18 +1,21 @@
-fastapi
-uvicorn
-duckdb
-pandas
-numpy
-pyarrow
-scipy
-matplotlib
-rasterio
-requests
-python-dotenv
+# Compatible-release pins (X~=1.2 means >=1.2 and <2): the versions below were tested together
+# on Windows 11 with Python 3.12 in October 2026. Newer minor releases are allowed; a new
+# major release is not, so a breaking upgrade cannot silently reach a fresh install.
+fastapi~=0.143
+uvicorn~=0.54
+duckdb~=1.5
+pandas~=3.0
+numpy~=2.5
+pyarrow~=26.0
+scipy~=1.18
+matplotlib~=3.11
+rasterio~=1.5
+requests~=2.34
+python-dotenv~=1.2
 # Optional: only needed for the MERRA-2 validation/wind-vector panels
 # (dust source attribution tab). The dashboard runs fine without them --
 # those panels just show "not configured" instead.
-earthaccess
-xarray
-h5netcdf
-netCDF4
+earthaccess~=0.19
+xarray~=2026.9
+h5netcdf~=1.8
+netCDF4~=1.7

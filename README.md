@@ -115,11 +115,7 @@ Files that don't parse to exactly 8 fields are skipped by `build_dataset.py`.
 | `TAS_kn` | true airspeed (single-flight speed profile) |
 | `vertical_rate` | climb/descent rate (single-flight profile) |
 
-Any other columns are ignored, so a wider export is fine. The upstream pipeline
-this dashboard was built against also produces, per timestep:
-`Mach`, `KCAS`, `StaticTemperature_K`, `Density_kg_m3`, `AircraftWeight_kg`,
-`CoreMassFlowRate_kg_s`, `Dust_small`, `Dust_medium`, `Dust_large`; none of
-these are required by anything in this repo.
+Any other columns are ignored, so a wider export is fine. 
 
 **`phase` values:** `GROUND`, `CLIMB`, `LEVEL CLIMB`, `CRUISE`, `DESCENT`,
 `LEVEL DESCENT`, `LEVEL FLIGHT`, `HOLD`, `UNKNOWN`. Only

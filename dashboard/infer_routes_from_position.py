@@ -29,7 +29,7 @@ import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CSV_DIR = Path(os.environ.get("DUST_CSV_DIR") or SCRIPT_DIR.parent / "CSVFiles").expanduser()  # DUST_CSV_DIR overrides the default repo-root CSVFiles/
-FLIGHTS_PARQUET = SCRIPT_DIR / "data" / "flights.parquet"
+FLIGHTS_PARQUET = Path(os.environ.get("DUST_DATA_DIR") or SCRIPT_DIR / "data").expanduser() / "flights.parquet"
 
 # Same 11 airports as app.py's AIRPORTS dict -- kept in sync manually since
 # this script runs standalone, not imported into the live app.

@@ -14,7 +14,7 @@ and, for the optional dust-source-attribution features, your own local
 
 ## Quick start
 
-You need Python 3.12 or newer and a folder of per-flight CSVs.
+You need Python 3.12 or newer, plus a folder of per-flight CSVs (or none, if you only want to try the demo below).
 
 ```bash
 git clone https://github.com/helin45/dust-impact-dashboard.git
@@ -24,6 +24,19 @@ python run.py
 ```
 
 On Windows you can double-click `start.bat` instead of running `python run.py`.
+
+**No flight data yet?** Try the built-in demo. It generates about 37 synthetic
+flights (two of them deliberately bad, so the Data quality tab has something to
+show) and runs the dashboard on them:
+
+```bash
+python run.py --demo
+```
+
+Everything in demo mode is randomly generated and the app shows a banner saying
+so; it only exists to show what the dashboard looks like. Demo data is kept in
+`.demo/` and never touches a real dataset. The dust source map still needs a
+HYSPLIT install (see below), so it stays empty in the demo.
 
 The first run creates a `.venv` folder, installs the requirements (a few
 minutes), builds the dataset from your CSVs (how long depends on how many you
@@ -36,6 +49,7 @@ while the data loads.
 | option | what it does |
 |---|---|
 | `--csv-dir <folder>` | read flight CSVs from any folder instead of `CSVFiles/` (also settable with the `DUST_CSV_DIR` environment variable) |
+| `--demo` | run on built-in synthetic flights instead, no CSVs needed; its data lives in `.demo/` and never touches your real dataset |
 | `--port <n>` | serve on a different port (default 8000) |
 | `--no-browser` | do not open a browser tab |
 | `--rebuild` | force rebuilding the dataset from the CSVs |
